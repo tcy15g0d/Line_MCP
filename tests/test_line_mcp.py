@@ -550,7 +550,7 @@ def test_allow_with_picker_adds_and_removes_in_one_save(with_community):
     assert Config(with_community).allowed == ["Open Club / General"]
 
 
-def run_picker(keys, limit=10):
+def run_picker(keys):
     """Drive the real Textual picker headlessly with key presses. "Study" starts as allowed."""
     import asyncio
     from line_mcp.picker import ChatPicker
@@ -564,7 +564,7 @@ def run_picker(keys, limit=10):
              chat("community", "Open Club", "m1")]
 
     async def drive():
-        app = ChatPicker(chats, manage.KIND_LABELS, manage.KIND_NOTICES, "group", limit)
+        app = ChatPicker(chats, manage.KIND_LABELS, manage.KIND_NOTICES, "group")
         async with app.run_test(size=(120, 36)) as pilot:
             for key in keys:
                 await pilot.press(key)
@@ -623,10 +623,49 @@ def test_tui_only_explicit_y_confirms():
     _, result = run_picker(["down", "space", "enter", "y"])
     assert result["add"] == [] and [c["name"] for c in result["remove"]] == ["Study"]
     assert run_picker(["q"])[1] is None
-
-
-def test_tui_limit_counts_only_new_additions():
+def test_tui_has_no_cap_on_how_many_can_be_added():
     pytest.importorskip("textual")
-    assert run_picker(["tab", "space", "down", "space", "down", "space"], limit=2)[0]["added"] == ["ua", "ub"]
-    state = run_picker(["down", "space", "tab", "space", "down", "space", "down", "space"], limit=2)[0]
-    assert state["removed"] == ["c2"] and state["added"] == ["ua", "ub"]    # removals never use up the limit
+    state = run_picker(["tab"] + ["space", "down"] * 3)[0]                  # tick every friend, one by one
+    assert state["added"] == ["ua", "ub", "uc"]
+
+
+def test_tui_select_all_acts_on_visible_rows_of_the_current_tab():
+    pytest.importorskip("textual")
+    state = run_picker(["tab", "a"])[0]
+    assert state["added"] == ["ua", "ub", "uc"] and state["removed"] == []  # friends only; other tabs untouched
+    assert run_picker(["tab", "a", "a"])[0]["added"] == []                  # pressing again clears them
+    # In the group tab "Study" is already allowed, so "a" ticks the rest; again unticks all visible, incl. Study.
+    state = run_picker(["a"])[0]
+    assert state["added"] == ["c1"] and state["removed"] == []
+    state = run_picker(["a", "a"])[0]
+    assert state["added"] == [] and state["removed"] == ["c2"]
+    # Search narrows what "a" touches: only Alice and Alicia match "ali".
+    state = run_picker(["tab", "slash", "a", "l", "i", "enter", "a"])[0]
+    assert state["added"] == ["ua", "uc"]
+    # Ticks made before a search survive it, and "a" does not touch hidden rows.
+    state = run_picker(["tab", "down", "space", "slash", "a", "l", "i", "enter", "a"])[0]
+    assert state["added"] == ["ua", "ub", "uc"]
+
+
+def test_tui_confirmation_warns_on_big_batches_and_still_needs_y():
+    pytest.importorskip("textual")
+    import asyncio
+    from line_mcp.picker import BIG_BATCH, SHOW_MAX, ChatPicker
+
+    chats = [{"kind": "friend", "name": f"Friend {n}", "chat_id": f"u{n}", "allowed": False,
+              "same_name_count": 1, "last_activity": None} for n in range(BIG_BATCH + SHOW_MAX)]
+
+    async def drive(keys):
+        app = ChatPicker(chats, manage.KIND_LABELS, manage.KIND_NOTICES, "friend")
+        async with app.run_test(size=(120, 36)) as pilot:
+            for key in keys:
+                await pilot.press(key)
+                await pilot.pause()
+            texts = [str(w.content) for w in app.screen.query("Static") if hasattr(w, "content")]
+            return type(app.screen).__name__, "\n".join(texts), app.return_value
+
+    screen, text, result = asyncio.run(drive(["a", "enter"]))
+    assert screen == "ConfirmScreen" and result is None                      # select-all alone saves nothing
+    assert f"一次開放 {BIG_BATCH + SHOW_MAX} 個" in text and "還有 20 個未列出" in text
+    _, _, result = asyncio.run(drive(["a", "enter", "y"]))
+    assert len(result["add"]) == BIG_BATCH + SHOW_MAX

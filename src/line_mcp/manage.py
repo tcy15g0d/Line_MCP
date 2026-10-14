@@ -27,7 +27,6 @@ KIND_NOTICES = {
     "community": "社群含大量不特定成員的發言，訊息量也可能非常大；請確認適合交給 AI 處理。",
 }
 PICK_LIMIT = 30  # rows shown by the numbered fallback
-PICK_MAX = 10  # most chats opened in one confirmation
 
 
 def list_chats(config: Config, kind: str = "all", search: str = "") -> list[dict]:

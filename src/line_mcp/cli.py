@@ -97,7 +97,7 @@ def run(args) -> None:
             raise ValueError("非互動環境請用 --room 指定名稱")
         if picker.available() and not args.classic:
             result = manage.allow_with_picker(args.config, lambda chats, initial: picker.pick_chats(
-                chats, manage.KIND_LABELS, manage.KIND_NOTICES, initial, manage.PICK_MAX), args.type or "")
+                chats, manage.KIND_LABELS, manage.KIND_NOTICES, initial), args.type or "")
         else:
             if not args.classic:
                 print('提示：安裝 `pip install "line-local-mcp[tui]"` 可使用全螢幕分頁選擇器。\n', file=sys.stderr)
