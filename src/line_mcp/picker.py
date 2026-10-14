@@ -7,13 +7,12 @@ writes the allow-list; the caller does that after the user confirms.
 from __future__ import annotations
 
 try:
-    from textual import events
     from textual.app import App, ComposeResult
     from textual.binding import Binding
     from textual.containers import VerticalScroll
     from textual.content import Content
     from textual.screen import ModalScreen
-    from textual.widgets import Footer, Input, SelectionList, Static, TabbedContent, TabPane
+    from textual.widgets import Footer, SelectionList, Static, TabbedContent, TabPane
     from textual.widgets.selection_list import Selection
 except ImportError:  # the numbered fallback in manage.py is used instead
     App = None
@@ -28,7 +27,7 @@ BIG_BATCH = 20  # warn on the confirmation screen at or above this many addition
 SHOW_MAX = 40  # most names listed per section on the confirmation screen
 HELP = "\n".join((
     "按鍵　↑ ↓ 移動　｜　空白鍵 勾選／取消勾選　｜　Tab／Shift+Tab（或 1 2 3）切換分頁",
-    "　　　a 全選／全不選（目前分頁，搜尋後只算看得到的）　｜　/ 搜尋（Enter 或 Esc 回到清單）",
+    "　　　a 全選／全不選（目前分頁，搜尋後只算看得到的）　｜　/ 搜尋（可打中文）　｜　Esc 清除搜尋",
     "　　　Enter 檢視變更並確認　｜　q 不儲存離開",
     "說明　☑ 打勾＝目前已允許。勾選沒打勾的＝新增；取消已打勾的＝移除。",
     "　　　按 Enter 只會顯示變更，在確認畫面按 y 才會真正儲存。",
@@ -84,7 +83,7 @@ if App is not None:
         CSS = """
         Screen { overflow: hidden; }
         #help { border: round $primary; color: $text; padding: 0 1; margin: 0 1; height: auto; }
-        #search { margin: 0 1; }
+        #search { padding: 0 2; height: 1; color: $accent; }
         TabbedContent { height: 1fr; }
         TabbedContent > ContentSwitcher { height: 1fr; }
         TabPane { height: 1fr; padding: 0; }
@@ -97,7 +96,7 @@ if App is not None:
             Binding("enter", "review", "檢視並確認", priority=True),
             Binding("a", "toggle_all", "全選／全不選"),
             Binding("slash", "search", "搜尋"),
-            Binding("escape", "escape", "回清單", show=False),
+            Binding("escape", "clear_search", "清除搜尋", show=False),
             Binding("1", "goto('group')", show=False),
             Binding("2", "goto('friend')", show=False),
             Binding("3", "goto('community')", show=False),
@@ -106,7 +105,7 @@ if App is not None:
         ]
 
         def __init__(self, chats: list[dict], labels: dict[str, str], notices: dict[str, str],
-                     initial: str = "group"):
+                     initial: str = "group", ask=None):
             super().__init__()
             self.chats = chats
             self.by_id = {c["chat_id"]: c for c in chats}
@@ -114,6 +113,8 @@ if App is not None:
             self.initial = initial if initial in dict(TABS) else "group"
             self.original = {c["chat_id"] for c in chats if c["allowed"]}  # the current allow-list
             self.selected = set(self.original)  # ticked chat IDs, kept across tabs and searches
+            self.term = ""  # current search keyword
+            self.ask = ask or self._ask_in_terminal  # injectable so tests need no real terminal
 
         @property
         def added(self) -> list[str]:
@@ -125,7 +126,7 @@ if App is not None:
 
         def compose(self) -> ComposeResult:
             yield Static(Content(HELP), id="help")
-            yield Input(placeholder="按 / 輸入關鍵字篩選（Enter 或 Esc 回到清單）", id="search")
+            yield Static("", id="search")
             with TabbedContent(initial=self.initial):
                 for kind, label in TABS:
                     with TabPane(label, id=kind):
@@ -139,7 +140,7 @@ if App is not None:
 
         # -- rendering -------------------------------------------------------------------
         def _refill(self) -> None:
-            term = self.query_one("#search", Input).value.strip().casefold()
+            term = self.term.casefold()
             for kind, label in TABS:
                 matches = [c for c in self.chats if c["kind"] == kind and term in c["name"].casefold()]
                 widget = self.query_one(f"#list-{kind}", SelectionList)
@@ -149,6 +150,8 @@ if App is not None:
                     for c in matches])
                 widget.highlighted = 0 if matches else None  # so Space works without pressing ↓ first
                 self.query_one(TabbedContent).get_tab(kind).label = f"{label} ({len(matches)})"
+            self.query_one("#search", Static).update(Content(
+                f"搜尋：{self.term}　（按 / 修改，Esc 清除）" if self.term else "搜尋：（無）　按 / 輸入關鍵字"))
             self._status()
 
         @staticmethod
@@ -181,31 +184,8 @@ if App is not None:
                 self.selected.discard(chat_id)
             self._status()
 
-        def on_input_changed(self, event: Input.Changed) -> None:
-            self._refill()
-
-        def _sync_ime(self) -> None:
-            """Textual hides the real terminal cursor and only moves it when the input's selection
-            changes. Pointing it at the search box on focus/resize makes the OS input method
-            (Zhuyin, Pinyin...) show its composition at the text caret instead of a stale spot."""
-            box = self.query_one("#search", Input)
-            if box.has_focus:
-                self.cursor_position = box.cursor_screen_offset
-                box.refresh()  # a repaint is what carries the cursor move to the terminal
-
-        def on_descendant_focus(self, event: events.DescendantFocus) -> None:
-            if isinstance(event.widget, Input):
-                self.call_after_refresh(self._sync_ime)
-
-        def on_resize(self, event: events.Resize) -> None:
-            self.call_after_refresh(self._sync_ime)
-
-        def on_input_submitted(self, event: Input.Submitted) -> None:
-            self._focus_list()
-
         def on_tabbed_content_tab_activated(self, event: TabbedContent.TabActivated) -> None:
-            if not self.query_one("#search", Input).has_focus:
-                self.call_after_refresh(self._focus_list)
+            self.call_after_refresh(self._focus_list)
 
         # -- actions -----------------------------------------------------------------------
         def action_tab(self, step: int) -> None:
@@ -230,17 +210,28 @@ if App is not None:
                 widget.select_all()
             self._status()
 
-        def action_search(self) -> None:
-            self.query_one("#search", Input).focus()
+        def _ask_in_terminal(self, prompt: str) -> str | None:
+            """Hand the terminal back for one ordinary line of input. A full-screen app cannot place
+            the OS input method (Zhuyin, Pinyin...) reliably, but a normal prompt always can."""
+            with self.suspend():
+                try:
+                    return input("\n" + prompt)
+                except (EOFError, KeyboardInterrupt):
+                    return None  # keep the current keyword
 
-        def action_escape(self) -> None:
-            if self.query_one("#search", Input).has_focus:
-                self._focus_list()
+        def action_search(self) -> None:
+            answer = self.ask("搜尋關鍵字（可輸入中文；直接按 Enter 清除搜尋）：")
+            if answer is not None:
+                self.term = answer.strip()
+                self._refill()
+            self._focus_list()
+
+        def action_clear_search(self) -> None:
+            if self.term:
+                self.term = ""
+                self._refill()
 
         def action_review(self) -> None:
-            if self.query_one("#search", Input).has_focus:
-                self._focus_list()
-                return
             added = [self.by_id[i] for i in self.added]
             removed = [self.by_id[i] for i in self.removed]
             if not added and not removed:
@@ -250,14 +241,12 @@ if App is not None:
                              lambda yes: self.exit({"add": added, "remove": removed}) if yes else None)
 
         def action_quit_picker(self) -> None:
-            if self.query_one("#search", Input).has_focus:
-                return  # "q" is just a letter while typing a search
             self.exit(None)
 
 
 def pick_chats(chats: list[dict], labels: dict[str, str], notices: dict[str, str],
-               initial: str = "group") -> dict | None:
+               initial: str = "group", ask=None) -> dict | None:
     """Run the editor. Returns {"add": [...], "remove": [...]} once confirmed, or None when the user quit."""
     if App is None:
         raise RuntimeError("textual is not installed")
-    return ChatPicker(chats, labels, notices, initial).run()
+    return ChatPicker(chats, labels, notices, initial, ask).run()

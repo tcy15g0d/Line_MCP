@@ -550,8 +550,9 @@ def test_allow_with_picker_adds_and_removes_in_one_save(with_community):
     assert Config(with_community).allowed == ["Open Club / General"]
 
 
-def run_picker(keys):
-    """Drive the real Textual picker headlessly with key presses. "Study" starts as allowed."""
+def run_picker(keys, asks=(), chats=None):
+    """Drive the real Textual picker headlessly with key presses. "Study" starts as allowed.
+    `asks` are the answers to the "/" search prompt, which is an ordinary terminal prompt in real use."""
     import asyncio
     from line_mcp.picker import ChatPicker
 
@@ -559,12 +560,18 @@ def run_picker(keys):
         return {"kind": kind, "name": name, "chat_id": chat_id, "allowed": allowed,
                 "same_name_count": 1, "last_activity": "2026-10-14T13:36+08:00"}
 
-    chats = [chat("group", "Team [beta]", "c1"), chat("group", "Study", "c2", allowed=True),
-             chat("friend", "Alice", "ua"), chat("friend", "Bob", "ub"), chat("friend", "Alicia", "uc"),
-             chat("community", "Open Club", "m1")]
+    chats = chats or [chat("group", "Team [beta]", "c1"), chat("group", "Study", "c2", allowed=True),
+                      chat("friend", "Alice", "ua"), chat("friend", "Bob", "ub"), chat("friend", "Alicia", "uc"),
+                      chat("community", "Open Club", "m1")]
+    answers = list(asks)
+    prompts = []
+
+    def ask(prompt):
+        prompts.append(prompt)
+        return answers.pop(0)
 
     async def drive():
-        app = ChatPicker(chats, manage.KIND_LABELS, manage.KIND_NOTICES, "group")
+        app = ChatPicker(chats, manage.KIND_LABELS, manage.KIND_NOTICES, "group", ask=ask)
         async with app.run_test(size=(120, 36)) as pilot:
             for key in keys:
                 await pilot.press(key)
@@ -573,7 +580,8 @@ def run_picker(keys):
             state = {"tab": tabs.active, "added": app.added, "removed": app.removed,
                      "screen": type(app.screen).__name__,
                      "labels": [str(tabs.get_tab(k).label) for k in ("group", "friend", "community")],
-                     "help": str(app.query_one("#help").content)}
+                     "help": str(app.query_one("#help").content), "term": app.term,
+                     "search_line": str(app.query_one("#search").content), "prompts": prompts}
         return state, app.return_value
 
     return asyncio.run(drive())
@@ -602,12 +610,26 @@ def test_tui_tabs_and_ticking():
     assert run_picker(["space", "tab", "space", "tab", "space"])[0]["added"] == ["c1", "ua", "m1"]
 
 
-def test_tui_search_keeps_changes_and_typing_is_not_a_command():
+def test_tui_search_filters_keeps_changes_and_accepts_chinese():
     pytest.importorskip("textual")
-    state, _ = run_picker(["tab", "space", "slash", "q", "1", "enter"])     # "q" and "1" typed into search
-    assert state["added"] == ["ua"] and state["labels"][1] == "好友 (0)"
-    state, _ = run_picker(["tab", "slash", "a", "l", "i", "enter", "space"])
-    assert state["added"] == ["ua"] and state["labels"][1] == "好友 (2)"
+    state, _ = run_picker(["tab", "space", "slash"], asks=["b"])           # tick Alice, then search "b"
+    assert state["added"] == ["ua"] and state["labels"][1] == "好友 (1)"    # only Bob shows; the tick is kept
+    assert "搜尋：b" in state["search_line"] and state["prompts"] and "中文" in state["prompts"][0]
+    state, _ = run_picker(["slash"], asks=[""])                             # empty answer clears the search
+    assert state["term"] == "" and state["labels"][0] == "群組 (2)"
+    state, _ = run_picker(["slash", "slash"], asks=["Bob", None])           # Ctrl+C / EOF keeps the keyword
+    assert state["term"] == "Bob" and state["labels"][1] == "好友 (1)"
+    state, _ = run_picker(["slash", "escape"], asks=["Bob"])                # Esc clears it again
+    assert state["term"] == "" and state["labels"][1] == "好友 (3)"
+    assert run_picker(["slash", "q"], asks=["Bob"])[1] is None              # letters are never swallowed now
+
+    def chat(kind, name, chat_id):
+        return {"kind": kind, "name": name, "chat_id": chat_id, "allowed": False,
+                "same_name_count": 1, "last_activity": None}
+
+    chinese = [chat("group", "週末讀書會", "c1"), chat("group", "專案討論群", "c2"), chat("friend", "讀書夥伴", "u1")]
+    state, _ = run_picker(["slash"], asks=["讀書"], chats=chinese)
+    assert state["labels"] == ["群組 (1)", "好友 (1)", "社群 (0)"] and state["term"] == "讀書"
 
 
 def test_tui_only_explicit_y_confirms():
@@ -640,10 +662,10 @@ def test_tui_select_all_acts_on_visible_rows_of_the_current_tab():
     state = run_picker(["a", "a"])[0]
     assert state["added"] == [] and state["removed"] == ["c2"]
     # Search narrows what "a" touches: only Alice and Alicia match "ali".
-    state = run_picker(["tab", "slash", "a", "l", "i", "enter", "a"])[0]
+    state = run_picker(["tab", "slash", "a"], asks=["ali"])[0]
     assert state["added"] == ["ua", "uc"]
     # Ticks made before a search survive it, and "a" does not touch hidden rows.
-    state = run_picker(["tab", "down", "space", "slash", "a", "l", "i", "enter", "a"])[0]
+    state = run_picker(["tab", "down", "space", "slash", "a"], asks=["ali"])[0]
     assert state["added"] == ["ua", "ub", "uc"]
 
 
@@ -672,7 +694,7 @@ def test_tui_confirmation_warns_on_big_batches_and_still_needs_y():
 
 
 @pytest.mark.parametrize("size", [(120, 36), (100, 30), (80, 24)])
-def test_tui_layout_fits_the_screen_and_input_method_follows_the_search_caret(size):
+def test_tui_layout_fits_the_screen_at_common_terminal_sizes(size):
     pytest.importorskip("textual")
     import asyncio
     from line_mcp.picker import ChatPicker
@@ -681,32 +703,21 @@ def test_tui_layout_fits_the_screen_and_input_method_follows_the_search_caret(si
               "same_name_count": 1, "last_activity": None} for n in range(300)]
 
     async def drive():
-        app = ChatPicker(chats, manage.KIND_LABELS, manage.KIND_NOTICES, "friend")
+        app = ChatPicker(chats, manage.KIND_LABELS, manage.KIND_NOTICES, "friend", ask=lambda prompt: "Friend 1")
         async with app.run_test(size=size) as pilot:
-            box = app.query_one("#search")
-
             def check(step):
-                screen = app.screen
-                assert tuple(screen.virtual_size) == size, f"{step}: content overflows the screen"
-                assert tuple(screen.scroll_offset) == (0, 0), f"{step}: screen scrolled away"
-                for widget in (app.query_one("#help"), box, app.query_one("#status")):
-                    assert 0 <= widget.region.y < size[1], f"{step}: {widget.id} off screen"
-                return widget
+                assert tuple(app.screen.virtual_size) == size, f"{step}: content overflows the screen"
+                assert tuple(app.screen.scroll_offset) == (0, 0), f"{step}: screen scrolled away"
+                for name in ("#help", "#search", "#status"):
+                    assert 0 <= app.query_one(name).region.y < size[1], f"{step}: {name} off screen"
 
+            check("start")
             await pilot.press("a")                         # tick 300 rows: the status line must stay one row
             await pilot.pause()
             assert app.query_one("#status").region.height == 1
             check("after select-all")
-            await pilot.press("slash")                     # focus the search box
+            await pilot.press("slash")
             await pilot.pause()
-            check("search focused")
-            assert tuple(app.cursor_position) == tuple(box.cursor_screen_offset)   # IME popup lands on the input
-            assert 0 <= app.cursor_position.y < size[1]
-            start = app.cursor_position.x
-            box.insert_text_at_cursor("讀書") if hasattr(box, "insert_text_at_cursor") else box.insert("讀書", len(box.value))
-            await pilot.pause()
-            assert tuple(app.cursor_position) == tuple(box.cursor_screen_offset)
-            assert app.cursor_position.x == start + 4      # two wide characters = four terminal cells
-            check("after typing Chinese")
+            check("after search")
 
     asyncio.run(drive())
