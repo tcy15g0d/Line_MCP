@@ -191,11 +191,24 @@ if App is not None:
             box = self.query_one("#search", Input)
             if box.has_focus:
                 self.cursor_position = box.cursor_screen_offset
+                self._real_cursor(True)
                 box.refresh()  # a repaint is what carries the cursor move to the terminal
+
+        def _real_cursor(self, visible: bool) -> None:
+            """Textual hides the terminal cursor for good. Windows Terminal then anchors the input
+            method at the last painted cell (the far right of the row) instead of the caret, so the
+            real cursor is shown only while the search box has focus."""
+            write = getattr(getattr(self, "_driver", None), "write", None)
+            if write is not None:
+                write("\x1b[?25h" if visible else "\x1b[?25l")
 
         def on_descendant_focus(self, event: events.DescendantFocus) -> None:
             if isinstance(event.widget, Input):
                 self.call_after_refresh(self._sync_ime)
+
+        def on_descendant_blur(self, event: events.DescendantBlur) -> None:
+            if isinstance(event.widget, Input):
+                self._real_cursor(False)
 
         def on_resize(self, event: events.Resize) -> None:
             self.call_after_refresh(self._sync_ime)

@@ -710,3 +710,30 @@ def test_tui_layout_fits_the_screen_and_input_method_follows_the_search_caret(si
             check("after typing Chinese")
 
     asyncio.run(drive())
+
+
+def test_tui_shows_the_real_cursor_only_while_the_search_box_has_focus():
+    """Windows Terminal anchors the input method at the real cursor; Textual hides it for good."""
+    pytest.importorskip("textual")
+    import asyncio
+    from line_mcp.picker import ChatPicker
+
+    chats = [{"kind": "group", "name": "Study", "chat_id": "c1", "allowed": False,
+              "same_name_count": 1, "last_activity": None}]
+
+    async def drive():
+        app = ChatPicker(chats, manage.KIND_LABELS, manage.KIND_NOTICES, "group")
+        async with app.run_test(size=(120, 36)) as pilot:
+            await pilot.pause()                                    # let start-up finish focusing the list
+            written = []
+            app._driver.write = written.append                    # record what would reach the terminal
+            await pilot.press("slash")
+            await pilot.pause()
+            assert "\x1b[?25h" in written                          # shown for typing
+            assert tuple(app.cursor_position) == tuple(app.query_one("#search").cursor_screen_offset)
+            written.clear()
+            await pilot.press("enter")                             # back to the list
+            await pilot.pause()
+            assert "\x1b[?25l" in written and "\x1b[?25h" not in written
+
+    asyncio.run(drive())
