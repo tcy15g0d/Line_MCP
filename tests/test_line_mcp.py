@@ -669,3 +669,44 @@ def test_tui_confirmation_warns_on_big_batches_and_still_needs_y():
     assert f"一次開放 {BIG_BATCH + SHOW_MAX} 個" in text and "還有 20 個未列出" in text
     _, _, result = asyncio.run(drive(["a", "enter", "y"]))
     assert len(result["add"]) == BIG_BATCH + SHOW_MAX
+
+
+@pytest.mark.parametrize("size", [(120, 36), (100, 30), (80, 24)])
+def test_tui_layout_fits_the_screen_and_input_method_follows_the_search_caret(size):
+    pytest.importorskip("textual")
+    import asyncio
+    from line_mcp.picker import ChatPicker
+
+    chats = [{"kind": "friend", "name": f"Friend {n}", "chat_id": f"u{n}", "allowed": n % 7 == 0,
+              "same_name_count": 1, "last_activity": None} for n in range(300)]
+
+    async def drive():
+        app = ChatPicker(chats, manage.KIND_LABELS, manage.KIND_NOTICES, "friend")
+        async with app.run_test(size=size) as pilot:
+            box = app.query_one("#search")
+
+            def check(step):
+                screen = app.screen
+                assert tuple(screen.virtual_size) == size, f"{step}: content overflows the screen"
+                assert tuple(screen.scroll_offset) == (0, 0), f"{step}: screen scrolled away"
+                for widget in (app.query_one("#help"), box, app.query_one("#status")):
+                    assert 0 <= widget.region.y < size[1], f"{step}: {widget.id} off screen"
+                return widget
+
+            await pilot.press("a")                         # tick 300 rows: the status line must stay one row
+            await pilot.pause()
+            assert app.query_one("#status").region.height == 1
+            check("after select-all")
+            await pilot.press("slash")                     # focus the search box
+            await pilot.pause()
+            check("search focused")
+            assert tuple(app.cursor_position) == tuple(box.cursor_screen_offset)   # IME popup lands on the input
+            assert 0 <= app.cursor_position.y < size[1]
+            start = app.cursor_position.x
+            box.insert_text_at_cursor("讀書") if hasattr(box, "insert_text_at_cursor") else box.insert("讀書", len(box.value))
+            await pilot.pause()
+            assert tuple(app.cursor_position) == tuple(box.cursor_screen_offset)
+            assert app.cursor_position.x == start + 4      # two wide characters = four terminal cells
+            check("after typing Chinese")
+
+    asyncio.run(drive())

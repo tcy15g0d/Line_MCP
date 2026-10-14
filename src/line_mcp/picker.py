@@ -7,6 +7,7 @@ writes the allow-list; the caller does that after the user confirms.
 from __future__ import annotations
 
 try:
+    from textual import events
     from textual.app import App, ComposeResult
     from textual.binding import Binding
     from textual.containers import VerticalScroll
@@ -81,10 +82,14 @@ if App is not None:
     class ChatPicker(App[dict]):
         TITLE = "選擇要允許的聊天室"
         CSS = """
+        Screen { overflow: hidden; }
         #help { border: round $primary; color: $text; padding: 0 1; margin: 0 1; height: auto; }
         #search { margin: 0 1; }
-        #status { padding: 0 1; color: $success; }
+        TabbedContent { height: 1fr; }
+        TabbedContent > ContentSwitcher { height: 1fr; }
+        TabPane { height: 1fr; padding: 0; }
         SelectionList { height: 1fr; }
+        #status { padding: 0 1; color: $success; height: 1; }
         """
         BINDINGS = [
             Binding("tab", "tab(1)", "下一分頁", priority=True),
@@ -155,10 +160,10 @@ if App is not None:
 
         def _status(self) -> None:
             parts = [f"目前允許 {len(self.selected)} 個"]
-            if self.added:
-                parts.append(f"新增 {len(self.added)}：" + "、".join(self.by_id[i]["name"] for i in self.added))
-            if self.removed:
-                parts.append(f"移除 {len(self.removed)}：" + "、".join(self.by_id[i]["name"] for i in self.removed))
+            for label, ids in (("新增", self.added), ("移除", self.removed)):
+                if ids:
+                    names = "、".join(self.by_id[i]["name"] for i in ids[:3])
+                    parts.append(f"{label} {len(ids)} 個：{names}" + ("…" if len(ids) > 3 else ""))
             self.query_one("#status", Static).update(Content("　".join(parts)))
 
         def _active_list(self) -> SelectionList:
@@ -178,6 +183,22 @@ if App is not None:
 
         def on_input_changed(self, event: Input.Changed) -> None:
             self._refill()
+
+        def _sync_ime(self) -> None:
+            """Textual hides the real terminal cursor and only moves it when the input's selection
+            changes. Pointing it at the search box on focus/resize makes the OS input method
+            (Zhuyin, Pinyin...) show its composition at the text caret instead of a stale spot."""
+            box = self.query_one("#search", Input)
+            if box.has_focus:
+                self.cursor_position = box.cursor_screen_offset
+                box.refresh()  # a repaint is what carries the cursor move to the terminal
+
+        def on_descendant_focus(self, event: events.DescendantFocus) -> None:
+            if isinstance(event.widget, Input):
+                self.call_after_refresh(self._sync_ime)
+
+        def on_resize(self, event: events.Resize) -> None:
+            self.call_after_refresh(self._sync_ime)
 
         def on_input_submitted(self, event: Input.Submitted) -> None:
             self._focus_list()
