@@ -23,11 +23,11 @@ def available() -> bool:
     return App is not None
 
 
-TABS = (("group", "群組"), ("friend", "好友"), ("community", "社群"))
+TABS = (("group", "群組"), ("friend", "好友"), ("official", "官方帳號"), ("community", "社群"))
 BIG_BATCH = 20  # warn on the confirmation screen at or above this many additions
 SHOW_MAX = 40  # most names listed per section on the confirmation screen
 HELP = "\n".join((
-    "按鍵　↑ ↓ 移動　｜　空白鍵 勾選／取消勾選　｜　Tab／Shift+Tab（或 1 2 3）切換分頁",
+    "按鍵　↑ ↓ 移動　｜　空白鍵 勾選／取消勾選　｜　Tab／Shift+Tab（或 1 2 3 4）切換分頁",
     "　　　a 全選／全不選（目前分頁，搜尋後只算看得到的）　｜　/ 搜尋（Enter 或 Esc 回到清單）",
     "　　　Enter 檢視變更並確認　｜　q 不儲存離開",
     "說明　☑ 打勾＝目前已允許。勾選沒打勾的＝新增；取消已打勾的＝移除。",
@@ -100,7 +100,8 @@ if App is not None:
             Binding("escape", "escape", "回清單", show=False),
             Binding("1", "goto('group')", show=False),
             Binding("2", "goto('friend')", show=False),
-            Binding("3", "goto('community')", show=False),
+            Binding("3", "goto('official')", show=False),
+            Binding("4", "goto('community')", show=False),
             Binding("q", "quit_picker", "離開"),
             Binding("ctrl+c", "quit_picker", show=False),
         ]

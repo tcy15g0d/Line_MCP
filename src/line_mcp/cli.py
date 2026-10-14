@@ -41,12 +41,12 @@ def main():
     init = sub.add_parser("init", help="建立設定檔（允許名單預設為空）")
     init.add_argument("--force", action="store_true")
     rooms = sub.add_parser("rooms", help="列出本機資料庫中的群組、好友與社群名稱（不讀訊息）")
-    rooms.add_argument("--type", choices=("group", "friend", "community", "all"), default="group",
-                       help="預設只列群組；好友與社群需明確指定")
+    rooms.add_argument("--type", choices=("group", "friend", "official", "community", "all"), default="group",
+                       help="預設只列群組；好友、官方帳號與社群需明確指定")
     rooms.add_argument("--search", default="", help="只列出名稱含此文字的聊天室")
     allow = sub.add_parser("allow", help="把聊天室加入允許名單；不帶 --room 時用編號互動選擇")
     allow.add_argument("--room", help="完全相符的名稱；省略則進入互動選擇")
-    allow.add_argument("--type", choices=("group", "friend", "community"),
+    allow.add_argument("--type", choices=("group", "friend", "official", "community"),
                        help="互動選擇時預設開啟的分頁（全螢幕版），或編號版只列這種聊天室")
     allow.add_argument("--classic", action="store_true", help="改用編號輸入的簡易版，不使用全螢幕選擇器")
     allow.add_argument("--chat-id", help="同名時指定其 ID")

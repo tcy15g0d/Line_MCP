@@ -187,7 +187,7 @@ class LineDatabase:
         return result
 
     def _friend_chats(self, db: apsw.Connection) -> list[dict]:
-        """One-to-one chats, named by the friend's name as shown in LINE. Names only, no messages."""
+        """One-to-one chats (friends and official accounts), named as shown in LINE. Names only, no messages."""
         if not self.has_chat_table or not {"_mid"}.issubset(self.contact_columns):
             return []
         chat_columns = {row[1] for row in db.execute('PRAGMA table_info("_chat")')}
@@ -197,6 +197,10 @@ class LineDatabase:
         activity = 'ch."_lastUpdatedTime"' if "_lastUpdatedTime" in chat_columns else "NULL"
         sql = ('SELECT c."_mid", ' + activity + "".join(', c."%s"' % c for c in wanted) +
                ' FROM _contact c JOIN _chat ch ON ch."_id" = c."_mid" WHERE substr(c."_mid", 1, 1) = \'u\'')
+        # Official accounts and bots have a _buddyDetail row; they are not people, so they get their own kind.
+        official = ({row[0] for row in db.execute('SELECT "_mid" FROM _buddyDetail')}
+                    if "_buddydetail" in self.tables and "_mid" in
+                    {row[1] for row in db.execute('PRAGMA table_info("_buddyDetail")')} else set())
         friends = []
         for mid, last, *values in db.execute(sql):
             fields = dict(zip(wanted, values))
@@ -207,7 +211,8 @@ class LineDatabase:
                 except (ValueError, AttributeError):
                     pass
             if name:
-                friends.append({"name": name, "chat_id": mid, "last_activity_ms": last, "kind": "friend"})
+                friends.append({"name": name, "chat_id": mid, "last_activity_ms": last,
+                                "kind": "official" if mid in official else "friend"})
         return friends
 
     def _community_chats(self, db: apsw.Connection) -> list[dict]:

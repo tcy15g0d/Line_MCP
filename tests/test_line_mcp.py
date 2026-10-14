@@ -369,20 +369,24 @@ def with_friends(tmp_path):
                                _text TEXT, _contentType INTEGER, _contentInfo TEXT, _contentMetadata TEXT);
         CREATE TABLE _contact (_mid TEXT PRIMARY KEY, _displayName TEXT, _displayNameOverridden TEXT,
                                _targetProfileDetail TEXT);
+        CREATE TABLE _buddyDetail (_mid TEXT);
     ''')
     db.execute("INSERT INTO _groupChat VALUES ('c1', 'Team')")
-    db.executemany("INSERT INTO _chat VALUES (?,?)", [("c1", 5), ("ualice", 9), ("ubob", 8), ("ubob2", 7), ("unick", 6), ("uteam", 4)])
+    db.execute("INSERT INTO _buddyDetail VALUES ('ushop')")   # official accounts and bots live here
+    db.executemany("INSERT INTO _chat VALUES (?,?)", [("c1", 5), ("ualice", 9), ("ubob", 8), ("ubob2", 7), ("unick", 6), ("uteam", 4), ("ushop", 3)])
     db.executemany("INSERT INTO _contact VALUES (?,?,?,?)", [
         ("ualice", "Alice", "", None),
         ("ubob", "Bob", "", None), ("ubob2", "Bob", "", None),
         ("unick", "Real Name", "Nickname", None),
         ("uteam", "Team", "", None),
         ("unchatted", "Never Chatted", "", None),
+        ("ushop", "LINE Shop", "", None),
     ])
     db.executemany("INSERT INTO _message VALUES (?,?,?,?,?,?,?,?)", [
         ("1", "ualice", "ualice", 1, "hello from alice", 0, "{}", "{}"),
         ("2", "ubob", "ubob", 2, "bob private", 0, "{}", "{}"),
         ("3", "c1", "ualice", 3, "group text", 0, "{}", "{}"),
+        ("4", "ushop", "ushop", 4, "your order shipped", 0, "{}", "{}"),
     ])
     db.commit()
     db.close()
@@ -404,6 +408,23 @@ def test_friend_chats_are_listed_by_kind_and_search(with_friends):
     assert [c["name"] for c in manage.list_chats(config, "friend", "ali")] == ["Alice"]
     team = [c for c in manage.list_chats(config, "friend") if c["name"] == "Team"][0]
     assert team["same_name_count"] == 2
+
+
+def test_official_accounts_are_their_own_kind_not_friends(with_friends):
+    config = Config(with_friends, require_rooms=False)
+    assert ("official", "LINE Shop") in {(c["kind"], c["name"]) for c in manage.list_chats(config)}
+    assert "LINE Shop" not in [c["name"] for c in manage.list_chats(config, "friend")]
+    assert [c["name"] for c in manage.list_chats(config, "official")] == ["LINE Shop"]
+    assert manage.list_chats(config, "official", "shop")[0]["kind"] == "official"
+    assert manage.allow_room(with_friends, "LINE Shop")["kind"] == "official"
+    service = Service(Config(with_friends))
+    try:
+        assert [m["text"] for m in service.messages("LINE Shop")["messages"]] == ["your order shipped"]
+        with pytest.raises(ValueError, match="allowed_rooms"):
+            service.messages("Alice")                 # opening an official account does not open friends
+    finally:
+        service.close()
+    assert "訂單" in manage.KIND_NOTICES["official"] and manage.KIND_LABELS["official"] == "官方帳號"
 
 
 def test_allow_friend_isolates_other_chats(with_friends):
@@ -534,7 +555,7 @@ def test_allow_with_picker_adds_and_removes_in_one_save(with_community):
                 "remove": [c for c in chats if c["name"] == "Alice"]}
 
     result = manage.allow_with_picker(with_community, pick, "friend")
-    assert seen == {"initial": "friend", "kinds": {"group", "friend", "community"}}
+    assert seen == {"initial": "friend", "kinds": {"group", "friend", "official", "community"}}
     assert result["allowed_rooms"] == ["Open Club / General"] and result["removed"] == ["Alice"]
     config = Config(with_community)
     assert "chat_id" not in config.raw["rooms"]["Alice"]                      # pin dropped on removal
@@ -561,7 +582,7 @@ def run_picker(keys):
 
     chats = [chat("group", "Team [beta]", "c1"), chat("group", "Study", "c2", allowed=True),
              chat("friend", "Alice", "ua"), chat("friend", "Bob", "ub"), chat("friend", "Alicia", "uc"),
-             chat("community", "Open Club", "m1")]
+             chat("official", "LINE Shop", "o1"), chat("community", "Open Club", "m1")]
 
     async def drive():
         app = ChatPicker(chats, manage.KIND_LABELS, manage.KIND_NOTICES, "group")
@@ -572,7 +593,7 @@ def run_picker(keys):
             tabs = app.query_one("TabbedContent")
             state = {"tab": tabs.active, "added": app.added, "removed": app.removed,
                      "screen": type(app.screen).__name__,
-                     "labels": [str(tabs.get_tab(k).label) for k in ("group", "friend", "community")],
+                     "labels": [str(tabs.get_tab(k).label) for k in ("group", "friend", "official", "community")],
                      "help": str(app.query_one("#help").content)}
         return state, app.return_value
 
@@ -582,7 +603,7 @@ def run_picker(keys):
 def test_tui_allowed_chats_start_ticked_and_help_is_always_shown():
     pytest.importorskip("textual")
     state, _ = run_picker([])
-    assert state["tab"] == "group" and state["labels"] == ["群組 (2)", "好友 (3)", "社群 (1)"]
+    assert state["tab"] == "group" and state["labels"] == ["群組 (2)", "好友 (3)", "官方帳號 (1)", "社群 (1)"]
     assert state["added"] == [] and state["removed"] == []                  # nothing changed yet
     for tab in ("", "tab", "tab tab"):                                      # help stays on every tab
         help_text = run_picker(tab.split())[0]["help"]
@@ -592,14 +613,15 @@ def test_tui_allowed_chats_start_ticked_and_help_is_always_shown():
 def test_tui_tabs_and_ticking():
     pytest.importorskip("textual")
     assert run_picker(["tab"])[0]["tab"] == "friend"
-    assert run_picker(["tab", "tab", "tab"])[0]["tab"] == "group"           # wraps around
+    assert run_picker(["tab", "tab"])[0]["tab"] == "official"
+    assert run_picker(["tab", "tab", "tab", "tab"])[0]["tab"] == "group"    # wraps around
     assert run_picker(["shift+tab"])[0]["tab"] == "community"
-    assert run_picker(["3"])[0]["tab"] == "community"
+    assert run_picker(["3"])[0]["tab"] == "official" and run_picker(["4"])[0]["tab"] == "community"
     assert run_picker(["space"])[0]["added"] == ["c1"]                      # first row is highlighted at start
     state = run_picker(["down", "space"])[0]                                # Study was allowed: unticking removes
     assert state["removed"] == ["c2"] and state["added"] == []
     assert run_picker(["down", "space", "space"])[0]["removed"] == []       # ticking it again cancels the removal
-    assert run_picker(["space", "tab", "space", "tab", "space"])[0]["added"] == ["c1", "ua", "m1"]
+    assert run_picker(["space", "tab", "space", "tab", "space", "tab", "space"])[0]["added"] == ["c1", "ua", "o1", "m1"]
 
 
 def test_tui_search_keeps_changes_and_typing_is_not_a_command():

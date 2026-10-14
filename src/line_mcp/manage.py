@@ -21,9 +21,10 @@ def init_config(path: str | Path, force: bool = False) -> Path:
     return path
 
 
-KIND_LABELS = {"group": "群組", "friend": "好友", "community": "社群"}
+KIND_LABELS = {"group": "群組", "friend": "好友", "official": "官方帳號", "community": "社群"}
 KIND_NOTICES = {
     "friend": "一對一聊天通常比群組更私密，對方也沒有同意讓 AI 讀取。",
+    "official": "官方帳號的對話可能含有訂單、帳務、點數或個人資料。",
     "community": "社群含大量不特定成員的發言，訊息量也可能非常大；請確認適合交給 AI 處理。",
 }
 PICK_LIMIT = 30  # rows shown by the numbered fallback
@@ -32,7 +33,7 @@ PICK_LIMIT = 30  # rows shown by the numbered fallback
 def list_chats(config: Config, kind: str = "all", search: str = "") -> list[dict]:
     """Group, friend and community chat names known to the local database, flagged when already allowed."""
     if kind not in ("all", *KIND_LABELS):
-        raise ValueError("kind must be all, group, friend or community")
+        raise ValueError("kind must be all, group, friend, official or community")
     database = LineDatabase(config)
     try:
         status = database.refresh(discover=True)
