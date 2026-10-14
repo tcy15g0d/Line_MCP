@@ -61,11 +61,19 @@ def format_time(ms) -> str | None:
         return None
 
 
-def commit_allow(config: Config, chats: list[dict]) -> dict:
-    """Add chats to the allow-list, always pinned by chat ID so later same-name chats cannot take over."""
+def commit_allow(config: Config, chats: list[dict], remove: list[dict] = ()) -> dict:
+    """Apply additions and removals in one save. Added chats are pinned by chat ID so later
+    same-name chats cannot take over; removal keeps the room's other settings (paths, exports)."""
     raw = config.raw
     allowed = raw.setdefault("allowed_rooms", [])
     rooms = raw.setdefault("rooms", {})
+    removed = []
+    for chat in remove:
+        pinned = rooms.get(chat["name"], {}).get("chat_id")
+        if chat["name"] in allowed and (not pinned or pinned == chat["chat_id"]):
+            allowed.remove(chat["name"])
+            rooms.get(chat["name"], {}).pop("chat_id", None)
+            removed.append(chat["name"])
     for chat in chats:  # validate everything first so a conflict never leaves a half-written list
         pinned = rooms.get(chat["name"], {}).get("chat_id")
         if chat["name"] in allowed and pinned and pinned != chat["chat_id"]:
@@ -76,7 +84,7 @@ def commit_allow(config: Config, chats: list[dict]) -> dict:
             allowed.append(chat["name"])
         rooms.setdefault(chat["name"], {})["chat_id"] = chat["chat_id"]
     save_raw(config.path, raw)
-    return {"allowed_rooms": allowed, "config": str(config.path),
+    return {"allowed_rooms": allowed, "config": str(config.path), "removed": removed,
             "kinds": sorted({c["kind"] for c in chats})}
 
 
@@ -99,12 +107,14 @@ def allow_room(path: str | Path, name: str, chat_id: str | None = None) -> dict:
 
 
 def allow_with_picker(path: str | Path, pick, initial: str = "") -> dict | None:
-    """Let a full-screen picker choose among every chat. `pick(chats, initial_tab)` returns the confirmed ones."""
+    """Edit the allow-list in a full-screen picker over every chat.
+    `pick(chats, initial_tab)` returns the confirmed {"add": [...], "remove": [...]}, or None."""
     config = Config(path, require_rooms=False)
-    picked = pick(list_chats(config, "all"), initial or "group")
-    if not picked:
+    changes = pick(list_chats(config, "all"), initial or "group")
+    if not changes or not (changes["add"] or changes["remove"]):
         return None
-    return commit_allow(config, [c for c in picked if not c["allowed"]])
+    return commit_allow(config, [c for c in changes["add"] if not c["allowed"]],
+                        [c for c in changes["remove"] if c["allowed"]])
 
 
 def allow_interactive(path: str | Path, kind: str = "", ask=input, say=print) -> dict | None:
@@ -154,7 +164,7 @@ def disallow_room(path: str | Path, name: str) -> dict:
     if name not in raw.get("allowed_rooms", []):
         raise ValueError(f"「{name}」不在允許名單內")
     raw["allowed_rooms"] = [r for r in raw["allowed_rooms"] if r != name]
-    raw.get("rooms", {}).pop(name, None)
+    raw.get("rooms", {}).get(name, {}).pop("chat_id", None)
     save_raw(config.path, raw)
     return {"allowed_rooms": raw["allowed_rooms"], "config": str(config.path)}
 

@@ -71,7 +71,10 @@ def main():
 
 
 def print_allowed(result: dict) -> None:
-    print("已允許：" + "、".join(result["allowed_rooms"]) + "\n已在執行中的 MCP 用戶端重新連線後生效。")
+    if result.get("removed"):
+        print("已移除：" + "、".join(result["removed"]))
+    print("目前允許：" + ("、".join(result["allowed_rooms"]) or "（無）")
+          + "\n已在執行中的 MCP 用戶端重新連線後生效。")
 
 
 def run(args) -> None:

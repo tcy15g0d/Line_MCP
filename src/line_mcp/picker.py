@@ -1,7 +1,8 @@
-"""Full-screen, tabbed chat picker (optional: needs `pip install "line-local-mcp[tui]"`).
+"""Full-screen, tabbed allow-list editor (optional: needs `pip install "line-local-mcp[tui]"`).
 
-Pure UI: it receives chat names/IDs from the caller and returns the picked entries. It never
-reads messages and never writes the allow-list; the caller does that after the user confirms.
+Ticked = currently allowed. Ticking adds a chat, unticking removes it. Pure UI: it receives chat
+names/IDs from the caller and returns what to add and remove. It never reads messages and never
+writes the allow-list; the caller does that after the user confirms.
 """
 from __future__ import annotations
 
@@ -22,7 +23,12 @@ def available() -> bool:
 
 
 TABS = (("group", "群組"), ("friend", "好友"), ("community", "社群"))
-HINT = "空白鍵 選取　Tab／Shift+Tab 切換分頁　/ 搜尋　Enter 檢視並確認　q 離開"
+HELP = "\n".join((
+    "按鍵　↑ ↓ 移動　｜　空白鍵 勾選／取消勾選　｜　Tab／Shift+Tab（或 1 2 3）切換分頁",
+    "　　　/ 搜尋（Enter 或 Esc 回到清單）　｜　Enter 檢視變更並確認　｜　q 不儲存離開",
+    "說明　☑ 打勾＝目前已允許。勾選沒打勾的＝新增；取消已打勾的＝移除。",
+    "　　　按 Enter 只會顯示變更，在確認畫面按 y 才會真正儲存。",
+))
 
 if App is not None:
 
@@ -37,27 +43,36 @@ if App is not None:
                                    background: $surface; padding: 1 2; }
         """
 
-        def __init__(self, picked: list[dict], labels: dict[str, str], notices: dict[str, str]):
+        def __init__(self, added: list[dict], removed: list[dict], remaining: int,
+                     labels: dict[str, str], notices: dict[str, str]):
             super().__init__()
-            self.picked, self.labels, self.notices = picked, labels, notices
+            self.added, self.removed, self.remaining = added, removed, remaining
+            self.labels, self.notices = labels, notices
 
         def compose(self) -> ComposeResult:
             with Vertical():
-                yield Static(Content("即將開放給 AI 讀取：\n"))
-                for chat in self.picked:
-                    yield Static(Content(f"  • [{self.labels[chat['kind']]}] {chat['name']}"))
-                for notice in dict.fromkeys(self.notices[c["kind"]] for c in self.picked if c["kind"] in self.notices):
-                    yield Static(Content("\n提醒：" + notice))
+                if self.added:
+                    yield Static(Content("即將開放給 AI 讀取：\n"))
+                    for chat in self.added:
+                        yield Static(Content(f"  + [{self.labels[chat['kind']]}] {chat['name']}"))
+                    for notice in dict.fromkeys(self.notices[c["kind"]] for c in self.added if c["kind"] in self.notices):
+                        yield Static(Content("\n提醒：" + notice))
+                if self.removed:
+                    yield Static(Content(("\n" if self.added else "") + "即將移除（AI 之後讀不到）：\n"))
+                    for chat in self.removed:
+                        yield Static(Content(f"  - [{self.labels[chat['kind']]}] {chat['name']}"))
+                if not self.remaining:
+                    yield Static(Content("\n注意：名單將變成空的，MCP 伺服器在重新加入聊天室前無法啟動。"))
                 yield Static(Content("\n按 y 確認寫入　按 n 返回繼續選"))
             yield Footer()
 
         def action_answer(self, yes: bool) -> None:
             self.dismiss(yes)
 
-    class ChatPicker(App[list]):
+    class ChatPicker(App[dict]):
         TITLE = "選擇要允許的聊天室"
         CSS = """
-        #hint { color: $text-muted; padding: 0 1; }
+        #help { border: round $primary; color: $text; padding: 0 1; margin: 0 1; height: auto; }
         #search { margin: 0 1; }
         #status { padding: 0 1; color: $success; }
         SelectionList { height: 1fr; }
@@ -79,12 +94,22 @@ if App is not None:
                      initial: str = "group", limit: int = 10):
             super().__init__()
             self.chats = chats
+            self.by_id = {c["chat_id"]: c for c in chats}
             self.labels, self.notices, self.limit = labels, notices, limit
             self.initial = initial if initial in dict(TABS) else "group"
-            self.selected: dict[str, dict] = {}  # chat_id -> chat, kept across tabs and searches
+            self.original = {c["chat_id"] for c in chats if c["allowed"]}  # the current allow-list
+            self.selected = set(self.original)  # ticked chat IDs, kept across tabs and searches
+
+        @property
+        def added(self) -> list[str]:
+            return [c["chat_id"] for c in self.chats if c["chat_id"] in self.selected - self.original]
+
+        @property
+        def removed(self) -> list[str]:
+            return [c["chat_id"] for c in self.chats if c["chat_id"] in self.original - self.selected]
 
         def compose(self) -> ComposeResult:
-            yield Static(Content(HINT), id="hint")
+            yield Static(Content(HELP), id="help")
             yield Input(placeholder="按 / 輸入關鍵字篩選（Enter 或 Esc 回到清單）", id="search")
             with TabbedContent(initial=self.initial):
                 for kind, label in TABS:
@@ -105,26 +130,26 @@ if App is not None:
                 widget = self.query_one(f"#list-{kind}", SelectionList)
                 widget.clear_options()
                 widget.add_options([
-                    Selection(Content(self._line(c)), c["chat_id"], c["chat_id"] in self.selected,
-                              disabled=c["allowed"]) for c in matches])
-                first = next((i for i, c in enumerate(matches) if not c["allowed"]), None)
-                widget.highlighted = first  # so Space works immediately, without pressing ↓ first
+                    Selection(Content(self._line(c)), c["chat_id"], c["chat_id"] in self.selected)
+                    for c in matches])
+                widget.highlighted = 0 if matches else None  # so Space works without pressing ↓ first
                 self.query_one(TabbedContent).get_tab(kind).label = f"{label} ({len(matches)})"
             self._status()
 
         @staticmethod
         def _line(chat: dict) -> str:
             text = f"{chat['name']}  （最後活動 {(chat['last_activity'] or '未知')[:16]}）"
-            if chat["allowed"]:
-                text += "  [已允許]"
             if chat["same_name_count"] > 1:
                 text += "  [同名多個]"
             return text
 
         def _status(self) -> None:
-            names = "、".join(c["name"] for c in self.selected.values())
-            self.query_one("#status", Static).update(
-                Content(f"已選 {len(self.selected)}/{self.limit}" + (f"：{names}" if names else "")))
+            parts = [f"目前允許 {len(self.selected)} 個"]
+            if self.added:
+                parts.append(f"新增 {len(self.added)}/{self.limit}：" + "、".join(self.by_id[i]["name"] for i in self.added))
+            if self.removed:
+                parts.append(f"移除 {len(self.removed)}：" + "、".join(self.by_id[i]["name"] for i in self.removed))
+            self.query_one("#status", Static).update(Content("　".join(parts)))
 
         def _active_list(self) -> SelectionList:
             return self.query_one(f"#list-{self.query_one(TabbedContent).active}", SelectionList)
@@ -136,13 +161,13 @@ if App is not None:
         def on_selection_list_selection_toggled(self, event: SelectionList.SelectionToggled) -> None:
             chat_id = event.selection.value
             if chat_id in event.selection_list.selected:
-                if len(self.selected) >= self.limit:
+                if chat_id not in self.original and len(self.added) >= self.limit:
                     event.selection_list.deselect(chat_id)
-                    self.notify(f"一次最多選 {self.limit} 個，請先確認這一批", severity="warning")
+                    self.notify(f"一次最多新增 {self.limit} 個，請先確認這一批", severity="warning")
                     return
-                self.selected[chat_id] = next(c for c in self.chats if c["chat_id"] == chat_id)
+                self.selected.add(chat_id)
             else:
-                self.selected.pop(chat_id, None)
+                self.selected.discard(chat_id)
             self._status()
 
         def on_input_changed(self, event: Input.Changed) -> None:
@@ -175,13 +200,13 @@ if App is not None:
             if self.query_one("#search", Input).has_focus:
                 self._focus_list()
                 return
-            if not self.selected:
-                self.notify("還沒選任何聊天室，用空白鍵選取", severity="warning")
+            added = [self.by_id[i] for i in self.added]
+            removed = [self.by_id[i] for i in self.removed]
+            if not added and not removed:
+                self.notify("名單沒有變更，用空白鍵勾選要新增的，或取消勾選要移除的", severity="warning")
                 return
-            order = {c["chat_id"]: i for i, c in enumerate(self.chats)}
-            picked = sorted(self.selected.values(), key=lambda c: order[c["chat_id"]])
-            self.push_screen(ConfirmScreen(picked, self.labels, self.notices),
-                             lambda yes: self.exit(picked) if yes else None)
+            self.push_screen(ConfirmScreen(added, removed, len(self.selected), self.labels, self.notices),
+                             lambda yes: self.exit({"add": added, "remove": removed}) if yes else None)
 
         def action_quit_picker(self) -> None:
             if self.query_one("#search", Input).has_focus:
@@ -190,8 +215,8 @@ if App is not None:
 
 
 def pick_chats(chats: list[dict], labels: dict[str, str], notices: dict[str, str],
-               initial: str = "group", limit: int = 10) -> list[dict] | None:
-    """Run the picker. Returns the confirmed chats, or None when the user quit."""
+               initial: str = "group", limit: int = 10) -> dict | None:
+    """Run the editor. Returns {"add": [...], "remove": [...]} once confirmed, or None when the user quit."""
     if App is None:
         raise RuntimeError("textual is not installed")
     return ChatPicker(chats, labels, notices, initial, limit).run()

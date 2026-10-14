@@ -521,24 +521,37 @@ def test_community_names_listing_and_isolation(with_community):
         service.close()
 
 
-def test_allow_with_picker_commits_only_new_confirmed_chats(with_community):
+def test_allow_with_picker_adds_and_removes_in_one_save(with_community):
+    manage.allow_room(with_community, "Alice")
+    raw = json.loads(with_community.read_text(encoding="utf-8"))
+    raw["rooms"]["Alice"]["attachment_roots"] = ["keep-me"]
+    with_community.write_text(json.dumps(raw), encoding="utf-8")
     seen = {}
 
     def pick(chats, initial):
-        seen["kinds"] = {c["kind"] for c in chats}
-        seen["initial"] = initial
-        return [c for c in chats if c["name"] in ("Alice", "Open Club / General")]
+        seen["initial"], seen["kinds"] = initial, {c["kind"] for c in chats}
+        return {"add": [c for c in chats if c["name"] == "Open Club / General"],
+                "remove": [c for c in chats if c["name"] == "Alice"]}
 
     result = manage.allow_with_picker(with_community, pick, "friend")
-    assert seen == {"kinds": {"group", "friend", "community"}, "initial": "friend"}
-    assert sorted(result["allowed_rooms"]) == ["Alice", "Open Club / General"]
-    assert Config(with_community).room("Alice")["chat_id"] == "ualice"
-    assert manage.allow_with_picker(with_community, lambda chats, initial: None) is None  # cancelled
-    assert sorted(Config(with_community).allowed) == ["Alice", "Open Club / General"]
+    assert seen == {"initial": "friend", "kinds": {"group", "friend", "community"}}
+    assert result["allowed_rooms"] == ["Open Club / General"] and result["removed"] == ["Alice"]
+    config = Config(with_community)
+    assert "chat_id" not in config.raw["rooms"]["Alice"]                      # pin dropped on removal
+    assert config.raw["rooms"]["Alice"]["attachment_roots"] == ["keep-me"]    # other settings kept
+    service = Service(config)
+    try:
+        with pytest.raises(ValueError, match="allowed_rooms"):
+            service.messages("Alice")                                         # removed chat is closed again
+    finally:
+        service.close()
+    assert manage.allow_with_picker(with_community, lambda chats, initial: None) is None
+    assert manage.allow_with_picker(with_community, lambda chats, initial: {"add": [], "remove": []}) is None
+    assert Config(with_community).allowed == ["Open Club / General"]
 
 
 def run_picker(keys, limit=10):
-    """Drive the real Textual picker headlessly with key presses."""
+    """Drive the real Textual picker headlessly with key presses. "Study" starts as allowed."""
     import asyncio
     from line_mcp.picker import ChatPicker
 
@@ -552,51 +565,68 @@ def run_picker(keys, limit=10):
 
     async def drive():
         app = ChatPicker(chats, manage.KIND_LABELS, manage.KIND_NOTICES, "group", limit)
-        async with app.run_test(size=(110, 32)) as pilot:
+        async with app.run_test(size=(120, 36)) as pilot:
             for key in keys:
                 await pilot.press(key)
                 await pilot.pause()
             tabs = app.query_one("TabbedContent")
-            state = {"tab": tabs.active, "selected": sorted(app.selected), "screen": type(app.screen).__name__,
-                     "labels": [str(tabs.get_tab(k).label) for k in ("group", "friend", "community")]}
+            state = {"tab": tabs.active, "added": app.added, "removed": app.removed,
+                     "screen": type(app.screen).__name__,
+                     "labels": [str(tabs.get_tab(k).label) for k in ("group", "friend", "community")],
+                     "help": str(app.query_one("#help").content)}
         return state, app.return_value
 
     return asyncio.run(drive())
 
 
-def test_tui_tabs_selection_and_confirmation():
+def test_tui_allowed_chats_start_ticked_and_help_is_always_shown():
     pytest.importorskip("textual")
     state, _ = run_picker([])
     assert state["tab"] == "group" and state["labels"] == ["群組 (2)", "好友 (3)", "社群 (1)"]
-    assert run_picker(["tab"])[0]["tab"] == "friend"
-    assert run_picker(["tab", "tab", "tab"])[0]["tab"] == "group"      # wraps around
-    assert run_picker(["shift+tab"])[0]["tab"] == "community"
-    assert run_picker(["space"])[0]["selected"] == ["c1"]               # first item is highlighted at start
-    assert run_picker(["down", "space"])[0]["selected"] == ["c1"]       # already-allowed "Study" is skipped
-    assert run_picker(["space", "tab", "space", "tab", "space"])[0]["selected"] == ["c1", "m1", "ua"]  # across tabs
+    assert state["added"] == [] and state["removed"] == []                  # nothing changed yet
+    for tab in ("", "tab", "tab tab"):                                      # help stays on every tab
+        help_text = run_picker(tab.split())[0]["help"]
+        assert all(word in help_text for word in ("空白鍵", "Tab", "/ 搜尋", "Enter", "y", "q"))
 
 
-def test_tui_search_keeps_selection_and_typing_is_not_a_command():
+def test_tui_tabs_and_ticking():
     pytest.importorskip("textual")
-    state, _ = run_picker(["tab", "space", "slash", "q", "1", "enter"])  # "q" and "1" typed into search
-    assert state["selected"] == ["ua"] and state["labels"][1] == "好友 (0)"
+    assert run_picker(["tab"])[0]["tab"] == "friend"
+    assert run_picker(["tab", "tab", "tab"])[0]["tab"] == "group"           # wraps around
+    assert run_picker(["shift+tab"])[0]["tab"] == "community"
+    assert run_picker(["3"])[0]["tab"] == "community"
+    assert run_picker(["space"])[0]["added"] == ["c1"]                      # first row is highlighted at start
+    state = run_picker(["down", "space"])[0]                                # Study was allowed: unticking removes
+    assert state["removed"] == ["c2"] and state["added"] == []
+    assert run_picker(["down", "space", "space"])[0]["removed"] == []       # ticking it again cancels the removal
+    assert run_picker(["space", "tab", "space", "tab", "space"])[0]["added"] == ["c1", "ua", "m1"]
+
+
+def test_tui_search_keeps_changes_and_typing_is_not_a_command():
+    pytest.importorskip("textual")
+    state, _ = run_picker(["tab", "space", "slash", "q", "1", "enter"])     # "q" and "1" typed into search
+    assert state["added"] == ["ua"] and state["labels"][1] == "好友 (0)"
     state, _ = run_picker(["tab", "slash", "a", "l", "i", "enter", "space"])
-    assert state["selected"] == ["ua"] and state["labels"][1] == "好友 (2)"
+    assert state["added"] == ["ua"] and state["labels"][1] == "好友 (2)"
 
 
 def test_tui_only_explicit_y_confirms():
     pytest.importorskip("textual")
-    assert run_picker(["enter"])[0]["screen"] != "ConfirmScreen"        # nothing selected yet
+    assert run_picker(["enter"])[0]["screen"] != "ConfirmScreen"            # no changes yet
     assert run_picker(["space", "enter"])[0]["screen"] == "ConfirmScreen"
-    state, result = run_picker(["space", "enter", "enter"])             # Enter must not confirm
+    state, result = run_picker(["space", "enter", "enter"])                 # Enter must not confirm
     assert state["screen"] == "ConfirmScreen" and result is None
     state, result = run_picker(["space", "enter", "n"])
     assert state["screen"] != "ConfirmScreen" and result is None
     _, result = run_picker(["space", "enter", "y"])
-    assert [c["name"] for c in result] == ["Team [beta]"]               # brackets in a name are literal
+    assert [c["name"] for c in result["add"]] == ["Team [beta]"] and result["remove"] == []  # brackets are literal
+    _, result = run_picker(["down", "space", "enter", "y"])
+    assert result["add"] == [] and [c["name"] for c in result["remove"]] == ["Study"]
     assert run_picker(["q"])[1] is None
 
 
-def test_tui_limits_how_many_can_be_picked_at_once():
+def test_tui_limit_counts_only_new_additions():
     pytest.importorskip("textual")
-    assert run_picker(["tab", "space", "down", "space", "down", "space"], limit=2)[0]["selected"] == ["ua", "ub"]
+    assert run_picker(["tab", "space", "down", "space", "down", "space"], limit=2)[0]["added"] == ["ua", "ub"]
+    state = run_picker(["down", "space", "tab", "space", "down", "space", "down", "space"], limit=2)[0]
+    assert state["removed"] == ["c2"] and state["added"] == ["ua", "ub"]    # removals never use up the limit
