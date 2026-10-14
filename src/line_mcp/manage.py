@@ -26,7 +26,8 @@ KIND_NOTICES = {
     "friend": "一對一聊天通常比群組更私密，對方也沒有同意讓 AI 讀取。",
     "community": "社群含大量不特定成員的發言，訊息量也可能非常大；請確認適合交給 AI 處理。",
 }
-PICK_LIMIT = 30
+PICK_LIMIT = 30  # rows shown by the numbered fallback
+PICK_MAX = 10  # most chats opened in one confirmation
 
 
 def list_chats(config: Config, kind: str = "all", search: str = "") -> list[dict]:
@@ -95,6 +96,15 @@ def allow_room(path: str | Path, name: str, chat_id: str | None = None) -> dict:
     result = commit_allow(config, matches)
     result["kind"] = matches[0]["kind"]
     return result
+
+
+def allow_with_picker(path: str | Path, pick, initial: str = "") -> dict | None:
+    """Let a full-screen picker choose among every chat. `pick(chats, initial_tab)` returns the confirmed ones."""
+    config = Config(path, require_rooms=False)
+    picked = pick(list_chats(config, "all"), initial or "group")
+    if not picked:
+        return None
+    return commit_allow(config, [c for c in picked if not c["allowed"]])
 
 
 def allow_interactive(path: str | Path, kind: str = "", ask=input, say=print) -> dict | None:

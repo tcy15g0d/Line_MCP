@@ -519,3 +519,84 @@ def test_community_names_listing_and_isolation(with_community):
             service.messages("Open Club / Dev")
     finally:
         service.close()
+
+
+def test_allow_with_picker_commits_only_new_confirmed_chats(with_community):
+    seen = {}
+
+    def pick(chats, initial):
+        seen["kinds"] = {c["kind"] for c in chats}
+        seen["initial"] = initial
+        return [c for c in chats if c["name"] in ("Alice", "Open Club / General")]
+
+    result = manage.allow_with_picker(with_community, pick, "friend")
+    assert seen == {"kinds": {"group", "friend", "community"}, "initial": "friend"}
+    assert sorted(result["allowed_rooms"]) == ["Alice", "Open Club / General"]
+    assert Config(with_community).room("Alice")["chat_id"] == "ualice"
+    assert manage.allow_with_picker(with_community, lambda chats, initial: None) is None  # cancelled
+    assert sorted(Config(with_community).allowed) == ["Alice", "Open Club / General"]
+
+
+def run_picker(keys, limit=10):
+    """Drive the real Textual picker headlessly with key presses."""
+    import asyncio
+    from line_mcp.picker import ChatPicker
+
+    def chat(kind, name, chat_id, allowed=False):
+        return {"kind": kind, "name": name, "chat_id": chat_id, "allowed": allowed,
+                "same_name_count": 1, "last_activity": "2026-10-14T13:36+08:00"}
+
+    chats = [chat("group", "Team [beta]", "c1"), chat("group", "Study", "c2", allowed=True),
+             chat("friend", "Alice", "ua"), chat("friend", "Bob", "ub"), chat("friend", "Alicia", "uc"),
+             chat("community", "Open Club", "m1")]
+
+    async def drive():
+        app = ChatPicker(chats, manage.KIND_LABELS, manage.KIND_NOTICES, "group", limit)
+        async with app.run_test(size=(110, 32)) as pilot:
+            for key in keys:
+                await pilot.press(key)
+                await pilot.pause()
+            tabs = app.query_one("TabbedContent")
+            state = {"tab": tabs.active, "selected": sorted(app.selected), "screen": type(app.screen).__name__,
+                     "labels": [str(tabs.get_tab(k).label) for k in ("group", "friend", "community")]}
+        return state, app.return_value
+
+    return asyncio.run(drive())
+
+
+def test_tui_tabs_selection_and_confirmation():
+    pytest.importorskip("textual")
+    state, _ = run_picker([])
+    assert state["tab"] == "group" and state["labels"] == ["群組 (2)", "好友 (3)", "社群 (1)"]
+    assert run_picker(["tab"])[0]["tab"] == "friend"
+    assert run_picker(["tab", "tab", "tab"])[0]["tab"] == "group"      # wraps around
+    assert run_picker(["shift+tab"])[0]["tab"] == "community"
+    assert run_picker(["space"])[0]["selected"] == ["c1"]               # first item is highlighted at start
+    assert run_picker(["down", "space"])[0]["selected"] == ["c1"]       # already-allowed "Study" is skipped
+    assert run_picker(["space", "tab", "space", "tab", "space"])[0]["selected"] == ["c1", "m1", "ua"]  # across tabs
+
+
+def test_tui_search_keeps_selection_and_typing_is_not_a_command():
+    pytest.importorskip("textual")
+    state, _ = run_picker(["tab", "space", "slash", "q", "1", "enter"])  # "q" and "1" typed into search
+    assert state["selected"] == ["ua"] and state["labels"][1] == "好友 (0)"
+    state, _ = run_picker(["tab", "slash", "a", "l", "i", "enter", "space"])
+    assert state["selected"] == ["ua"] and state["labels"][1] == "好友 (2)"
+
+
+def test_tui_only_explicit_y_confirms():
+    pytest.importorskip("textual")
+    assert run_picker(["enter"])[0]["screen"] != "ConfirmScreen"        # nothing selected yet
+    assert run_picker(["space", "enter"])[0]["screen"] == "ConfirmScreen"
+    state, result = run_picker(["space", "enter", "enter"])             # Enter must not confirm
+    assert state["screen"] == "ConfirmScreen" and result is None
+    state, result = run_picker(["space", "enter", "n"])
+    assert state["screen"] != "ConfirmScreen" and result is None
+    _, result = run_picker(["space", "enter", "y"])
+    assert [c["name"] for c in result] == ["Team [beta]"]               # brackets in a name are literal
+    assert run_picker(["q"])[1] is None
+
+
+def test_tui_limits_how_many_can_be_picked_at_once():
+    pytest.importorskip("textual")
+    assert run_picker(["tab", "space", "down", "space", "down", "space"], limit=2)[0]["selected"] == ["ua", "ub"]

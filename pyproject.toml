@@ -22,6 +22,7 @@ dependencies = [
 
 [project.optional-dependencies]
 dev = ["pytest>=8,<10"]
+tui = ["textual>=8,<9"]
 
 [project.scripts]
 line-local-mcp = "line_mcp.server:main"

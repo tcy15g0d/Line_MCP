@@ -4,7 +4,7 @@ import argparse
 import json
 import sys
 
-from . import manage
+from . import manage, picker
 from .config import Config, default_config_path
 from .service import Service
 
@@ -47,7 +47,8 @@ def main():
     allow = sub.add_parser("allow", help="把聊天室加入允許名單；不帶 --room 時用編號互動選擇")
     allow.add_argument("--room", help="完全相符的名稱；省略則進入互動選擇")
     allow.add_argument("--type", choices=("group", "friend", "community"),
-                       help="互動選擇時只列這種聊天室；預設：沒輸入關鍵字只列群組，有關鍵字則三種都搜尋")
+                       help="互動選擇時預設開啟的分頁（全螢幕版），或編號版只列這種聊天室")
+    allow.add_argument("--classic", action="store_true", help="改用編號輸入的簡易版，不使用全螢幕選擇器")
     allow.add_argument("--chat-id", help="同名時指定其 ID")
     disallow = sub.add_parser("disallow", help="從允許名單移除群組")
     disallow.add_argument("--room", required=True)
@@ -91,7 +92,13 @@ def run(args) -> None:
             raise ValueError("--chat-id 需搭配 --room 使用")
         if not sys.stdin.isatty():
             raise ValueError("非互動環境請用 --room 指定名稱")
-        result = manage.allow_interactive(args.config, args.type or "")
+        if picker.available() and not args.classic:
+            result = manage.allow_with_picker(args.config, lambda chats, initial: picker.pick_chats(
+                chats, manage.KIND_LABELS, manage.KIND_NOTICES, initial, manage.PICK_MAX), args.type or "")
+        else:
+            if not args.classic:
+                print('提示：安裝 `pip install "line-local-mcp[tui]"` 可使用全螢幕分頁選擇器。\n', file=sys.stderr)
+            result = manage.allow_interactive(args.config, args.type or "")
         if result:
             print_allowed(result)
         return
