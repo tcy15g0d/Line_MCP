@@ -18,15 +18,21 @@ NEXT_STEPS = """已建立設定檔：{path}
 """
 
 
-def show_rooms(groups: list[dict]) -> None:
-    if not groups:
-        print("資料庫中沒有任何有名稱的群組。")
+FRIEND_NOTICE = ("提醒：一對一聊天通常比群組更私密，對方也沒有同意讓 AI 讀取。"
+                 "請只開放必要的對象，並確認你有權限這麼做。")
+
+
+def show_rooms(chats: list[dict]) -> None:
+    if not chats:
+        print("找不到符合的聊天室。")
         return
-    for number, g in enumerate(groups, 1):
-        flags = ["已允許"] if g["allowed"] else []
-        if g["same_name_count"] > 1:
-            flags.append(f"同名 {g['same_name_count']} 個，需用 --chat-id {g['chat_id']}")
-        print(f"{number:>3}. {g['name']}  （最後活動 {g['last_activity'] or '未知'}）" + (f"  [{'；'.join(flags)}]" if flags else ""))
+    for number, c in enumerate(chats, 1):
+        flags = ["已允許"] if c["allowed"] else []
+        if c["same_name_count"] > 1:
+            flags.append(f"同名 {c['same_name_count']} 個，需用 --chat-id {c['chat_id']}")
+        kind = "好友" if c["kind"] == "friend" else "群組"
+        print(f"{number:>3}. [{kind}] {c['name']}  （最後活動 {c['last_activity'] or '未知'}）"
+              + (f"  [{'；'.join(flags)}]" if flags else ""))
 
 
 def main():
@@ -38,10 +44,13 @@ def main():
     sub = parser.add_subparsers(dest="command", required=True)
     init = sub.add_parser("init", help="建立設定檔（允許名單預設為空）")
     init.add_argument("--force", action="store_true")
-    sub.add_parser("rooms", help="列出本機資料庫中的群組名稱（不讀訊息）")
-    allow = sub.add_parser("allow", help="把群組加入允許名單")
+    rooms = sub.add_parser("rooms", help="列出本機資料庫中的群組與好友聊天名稱（不讀訊息）")
+    rooms.add_argument("--type", choices=("group", "friend", "all"), default="group",
+                       help="預設只列群組；好友聊天需明確指定 friend 或 all")
+    rooms.add_argument("--search", default="", help="只列出名稱含此文字的聊天室")
+    allow = sub.add_parser("allow", help="把群組或好友聊天加入允許名單")
     allow.add_argument("--room", required=True)
-    allow.add_argument("--chat-id", help="同名群組時指定其 ID")
+    allow.add_argument("--chat-id", help="同名時指定其 ID")
     disallow = sub.add_parser("disallow", help="從允許名單移除群組")
     disallow.add_argument("--room", required=True)
     mcp = sub.add_parser("mcp-config", help="產生這台電腦的 MCP 用戶端設定")
@@ -67,11 +76,13 @@ def run(args) -> None:
         print(NEXT_STEPS.format(path=manage.init_config(args.config, args.force)))
         return
     if args.command == "rooms":
-        show_rooms(manage.list_groups(Config(args.config, require_rooms=False)))
+        show_rooms(manage.list_chats(Config(args.config, require_rooms=False), args.type, args.search))
         return
     if args.command == "allow":
         result = manage.allow_room(args.config, args.room, args.chat_id)
         print("已允許：" + "、".join(result["allowed_rooms"]) + "\n已在執行中的 MCP 用戶端重新連線後生效。")
+        if result["kind"] == "friend":
+            print(FRIEND_NOTICE)
         return
     if args.command == "disallow":
         result = manage.disallow_room(args.config, args.room)

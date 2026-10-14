@@ -1,6 +1,6 @@
 # LINE Local MCP
 
-讓支援 MCP 的 AI 用戶端（Claude Code、Codex 等）**唯讀**存取你自己電腦上 Windows 版 LINE 的指定群組：搜尋聊天文字、列出附件、讀取 Word／PDF／Excel 文字，並把可驗證的加密圖片縮圖解密後交給支援圖片的用戶端。
+讓支援 MCP 的 AI 用戶端（Claude Code、Codex 等）**唯讀**存取你自己電腦上 Windows 版 LINE 的指定群組或好友聊天：搜尋聊天文字、列出附件、讀取 Word／PDF／Excel 文字，並把可驗證的加密圖片縮圖解密後交給支援圖片的用戶端。
 
 > **使用前請先閱讀「隱私與責任」。** 這是非官方工具，只讀取你自己登入中的 LINE 在本機留下的資料。
 
@@ -19,8 +19,8 @@ py -3.11 -m venv .venv
 
 ```powershell
 line-local init                                   # 1. 建立設定檔，允許名單一開始是空的
-line-local rooms                                  # 2. 列出你的群組名稱（不讀訊息）
-line-local allow --room "你的群組名稱"             # 3. 只允許你選的群組
+line-local rooms                                  # 2. 列出你的群組名稱（不讀訊息）；好友聊天用 --type friend
+line-local allow --room "你的群組名稱"             # 3. 只允許你選的聊天室
 line-local check                                  # 4. 確認可以接通
 line-local mcp-config --client claude-code        # 5. 產生這台電腦的 MCP 設定
 ```
@@ -37,21 +37,26 @@ LINE 要保持登入。程式會從目前使用者的 LINE 程序記憶體找出
 
 | 指令 | 功能 |
 |---|---|
-| `line-local rooms` | 列出本機資料庫中的群組名稱、最後活動時間與是否已允許 |
+| `line-local rooms` | 列出群組名稱、最後活動時間與是否已允許（不讀訊息） |
+| `line-local rooms --type friend` | 改列一對一好友聊天；`--type all` 列出全部 |
+| `line-local rooms --search 文字` | 只列出名稱含該文字的聊天室，好友很多時很好用 |
 | `line-local allow --room 名稱` | 加入允許名單；名稱需完全相符 |
-| `line-local allow --room 名稱 --chat-id ID` | 有同名群組時，指定其中一個 |
+| `line-local allow --room 名稱 --chat-id ID` | 有同名時，指定其中一個 |
 | `line-local disallow --room 名稱` | 從名單移除 |
 
 - **預設一個群組都不開放。** 沒有允許任何群組時，MCP 伺服器會拒絕啟動。
 - 名單存在**每個人自己電腦上**的設定檔，不在程式碼裡，也不會被 git 提交。預設位置依序為：環境變數 `LINE_MCP_CONFIG`、目前資料夾的 `config.local.json`、`%APPDATA%\line-local-mcp\config.json`。
 - 變更名單後，需重新啟動 MCP 用戶端連線才會生效。
-- 名單外的群組，MCP 無法搜尋、列出或讀取附件，AI 也無法用工具列出你的其他群組；`rooms` 只存在於命令列。
-- 目前只支援**群組**。一對一聊天與多人小聊天室不在支援範圍。
+- 名單外的聊天室，MCP 無法搜尋、列出或讀取附件，AI 也無法用工具列出你的其他群組或好友；`rooms` 只存在於命令列。
+- 支援**群組**與**一對一好友聊天**。好友聊天以你在 LINE 看到的名稱（你設定的暱稱優先）辨識；多人小聊天室、社群與官方帳號不在支援範圍。
+- 群組與好友共用同一個名稱空間：名稱只要對到不只一個聊天室（例如好友與群組同名、兩位好友同名），就會**拒絕接通**，必須用 `--chat-id` 指定。
+- 好友聊天預設不會列出，需明確使用 `--type friend` 或 `--type all`。
 
 ## 隱私與責任
 
 - 所有處理都在本機：用 stdio 與用戶端溝通，不開 HTTP 服務、不發送 LINE 訊息、不呼叫遠端 LINE API。
-- 但用戶端呼叫工具後，回傳的訊息與檔案內容會成為該 **AI 服務的輸入**。群組裡有其他人的發言，請確認你有權限、也適合把這些內容交給 AI 處理。建議只開放必要的群組。
+- 但用戶端呼叫工具後，回傳的訊息與檔案內容會成為該 **AI 服務的輸入**。聊天室裡有其他人的發言，請確認你有權限、也適合把這些內容交給 AI 處理。建議只開放必要的聊天室。
+- **一對一好友聊天通常比群組更私密**，對方也沒有同意讓 AI 讀取。請特別審慎，並只開放你確實需要處理的對象。
 - 這個工具讀取 LINE 的本機加密資料庫，並從 LINE 程序記憶體取得金鑰。請只用在**你自己的帳號與電腦**，不要用來讀取他人的資料。是否符合 LINE 的服務條款，請自行判斷。
 - 本專案與 LINE 公司無關，LINE 更新後資料格式可能改變而失效。
 - **防毒軟體可能誤報。** 程式會唯讀搜尋你自己 `LINE.exe` 程序的記憶體來取得資料庫金鑰，這個行為與惡意程式竊取憑證的手法相似，部分防毒或端點防護軟體可能警告或封鎖。請只安裝來源可信、你已檢視過原始碼的版本；相關邏輯集中在 [windows_keys.py](src/line_mcp/windows_keys.py)，只在 `auto_memory_key` 為 `true` 時執行。若不想讓程式讀取記憶體，可把它設為 `false`，改用環境變數 `LINE_DB_KEY` 自行提供金鑰。
@@ -103,7 +108,8 @@ LINE 要保持登入。程式會從目前使用者的 LINE 程序記憶體找出
 
 - **「No database key found」**：確認 LINE 桌面版已登入並開啟過，且 `auto_memory_key` 為 `true`。
 - **「LINE changed its database during copying」**：LINE 正在寫入，稍候再試。
-- **找不到群組**：名稱需與 `line-local rooms` 顯示的完全相符，包含空白與符號。
+- **找不到群組或好友**：名稱需與 `line-local rooms` 顯示的完全相符，包含空白與符號。
+- **明明允許了卻讀不到**：可能有同名的聊天室，導致名稱不唯一而被拒絕；用 `rooms` 查看「同名」標記，再以 `--chat-id` 指定。
 - **工具沒有出現**：確認已重新啟動用戶端連線，並用 `line-local mcp-config` 產生的路徑設定。
 - 用 `line-local diagnose` 可檢查 LINE 路徑與資料庫狀態。
 

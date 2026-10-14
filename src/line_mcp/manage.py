@@ -21,44 +21,57 @@ def init_config(path: str | Path, force: bool = False) -> Path:
     return path
 
 
-def list_groups(config: Config) -> list[dict]:
-    """Group names known to the local database, flagged when already allowed."""
+def list_chats(config: Config, kind: str = "all", search: str = "") -> list[dict]:
+    """Group and friend chat names known to the local database, flagged when already allowed."""
+    if kind not in ("all", "group", "friend"):
+        raise ValueError("kind must be all, group or friend")
     database = LineDatabase(config)
     try:
         status = database.refresh(discover=True)
         if not status.get("connected"):
             raise ValueError("無法開啟 LINE 資料庫：" + json.dumps(
                 status.get("failures") or status.get("reason"), ensure_ascii=False))
-        groups = database.list_groups()
+        groups = database.list_chats()
     finally:
         database.close()
+    # Compute name overlap on the full list so a hidden same-name chat is still flagged.
+    groups = [g for g in groups if (kind == "all" or g["kind"] == kind)
+              and search.casefold() in g["name"].casefold()]
     for group in groups:
         group["allowed"] = group["name"] in config.allowed
         ms = group.pop("last_activity_ms")
-        group["last_activity"] = (datetime.fromtimestamp(ms / 1000).astimezone().isoformat(timespec="minutes")
-                                  if isinstance(ms, (int, float)) and ms > 0 else None)
+        group["last_activity"] = format_time(ms)
     return groups
+
+
+def format_time(ms) -> str | None:
+    """Local ISO time, or None for missing or out-of-range values (Windows rejects some)."""
+    try:
+        return datetime.fromtimestamp(ms / 1000).astimezone().isoformat(timespec="minutes") if ms and ms > 0 else None
+    except (OSError, OverflowError, ValueError, TypeError):
+        return None
 
 
 def allow_room(path: str | Path, name: str, chat_id: str | None = None) -> dict:
     config = Config(path, require_rooms=False)
-    matches = [g for g in list_groups(config) if g["name"] == name]
+    matches = [g for g in list_chats(config) if g["name"] == name]
     if not matches:
-        raise ValueError(f"找不到群組「{name}」。請先執行 `line-local rooms` 確認名稱（需完全相符）。")
+        raise ValueError(f"找不到群組或好友「{name}」。請先執行 `line-local rooms` 確認名稱（需完全相符）。")
     if chat_id:
         matches = [g for g in matches if g["chat_id"] == chat_id]
         if not matches:
-            raise ValueError("群組名稱與 --chat-id 不相符")
+            raise ValueError("名稱與 --chat-id 不相符")
     elif len(matches) > 1:
-        ids = "\n".join(f"  {g['chat_id']}  最後活動 {g['last_activity']}" for g in matches)
-        raise ValueError(f"有 {len(matches)} 個同名群組，請用 --chat-id 指定其中一個：\n{ids}")
+        ids = "\n".join(f"  {g['chat_id']}  {'好友' if g['kind'] == 'friend' else '群組'}  最後活動 {g['last_activity']}"
+                        for g in matches)
+        raise ValueError(f"有 {len(matches)} 個同名的群組或好友，請用 --chat-id 指定其中一個：\n{ids}")
     raw = config.raw
     if name not in raw.setdefault("allowed_rooms", []):
         raw["allowed_rooms"].append(name)
     if chat_id:
         raw.setdefault("rooms", {}).setdefault(name, {})["chat_id"] = chat_id
     save_raw(config.path, raw)
-    return {"allowed_rooms": raw["allowed_rooms"], "config": str(config.path)}
+    return {"allowed_rooms": raw["allowed_rooms"], "config": str(config.path), "kind": matches[0]["kind"]}
 
 
 def disallow_room(path: str | Path, name: str) -> dict:

@@ -305,7 +305,7 @@ def test_empty_allow_list_is_rejected_for_server(managed):
 
 
 def test_rooms_lists_names_only_and_allow_disallow(managed):
-    groups = manage.list_groups(Config(managed, require_rooms=False))
+    groups = manage.list_chats(Config(managed, require_rooms=False))
     assert {g["name"] for g in groups} == {ROOM, "Private other room"}
     assert not any(g["allowed"] for g in groups)
     assert "NEVER EXPOSE" not in json.dumps(groups)
@@ -319,7 +319,7 @@ def test_rooms_lists_names_only_and_allow_disallow(managed):
             service.messages("Private other room")
     finally:
         service.close()
-    assert any(g["allowed"] for g in manage.list_groups(Config(managed, require_rooms=False)))
+    assert any(g["allowed"] for g in manage.list_chats(Config(managed, require_rooms=False)))
 
     assert manage.disallow_room(managed, ROOM)["allowed_rooms"] == []
     with pytest.raises(ValueError, match="不在允許名單"):
@@ -355,3 +355,87 @@ def test_init_does_not_overwrite_and_client_config(tmp_path):
     assert "[mcp_servers.line_local]" in manage.client_config("codex", path)
     with pytest.raises(ValueError):
         manage.client_config("unknown", path)
+
+
+@pytest.fixture
+def with_friends(tmp_path):
+    """A database holding a group, friend chats, and a friend named like the group."""
+    db_path = tmp_path / "friends.edb"
+    db = sqlite3.connect(db_path)
+    db.executescript('''
+        CREATE TABLE _groupChat (_chatMid TEXT, _chatName TEXT);
+        CREATE TABLE _chat (_id TEXT, _lastUpdatedTime INTEGER);
+        CREATE TABLE _message (_id TEXT, _chatId TEXT, _from TEXT, _createdTime INTEGER,
+                               _text TEXT, _contentType INTEGER, _contentInfo TEXT, _contentMetadata TEXT);
+        CREATE TABLE _contact (_mid TEXT PRIMARY KEY, _displayName TEXT, _displayNameOverridden TEXT,
+                               _targetProfileDetail TEXT);
+    ''')
+    db.execute("INSERT INTO _groupChat VALUES ('c1', 'Team')")
+    db.executemany("INSERT INTO _chat VALUES (?,?)", [("c1", 5), ("ualice", 9), ("ubob", 8), ("ubob2", 7), ("unick", 6), ("uteam", 4)])
+    db.executemany("INSERT INTO _contact VALUES (?,?,?,?)", [
+        ("ualice", "Alice", "", None),
+        ("ubob", "Bob", "", None), ("ubob2", "Bob", "", None),
+        ("unick", "Real Name", "Nickname", None),
+        ("uteam", "Team", "", None),
+        ("unchatted", "Never Chatted", "", None),
+    ])
+    db.executemany("INSERT INTO _message VALUES (?,?,?,?,?,?,?,?)", [
+        ("1", "ualice", "ualice", 1, "hello from alice", 0, "{}", "{}"),
+        ("2", "ubob", "ubob", 2, "bob private", 0, "{}", "{}"),
+        ("3", "c1", "ualice", 3, "group text", 0, "{}", "{}"),
+    ])
+    db.commit()
+    db.close()
+    path = tmp_path / "friends.json"
+    raw = new_config()
+    raw.update({"line_root": str(tmp_path / "LINE"), "auto_memory_key": False,
+                "database": str(db_path), "snapshot_dir": "snapshots"})
+    save_raw(path, raw)
+    return path
+
+
+def test_friend_chats_are_listed_by_kind_and_search(with_friends):
+    config = Config(with_friends, require_rooms=False)
+    kinds = {(c["kind"], c["name"]) for c in manage.list_chats(config)}
+    assert ("group", "Team") in kinds and ("friend", "Alice") in kinds
+    assert ("friend", "Nickname") in kinds and ("friend", "Real Name") not in kinds  # nickname wins
+    assert not any(name == "Never Chatted" for _, name in kinds)  # no chat, not listed
+    assert {c["kind"] for c in manage.list_chats(config, "group")} == {"group"}
+    assert [c["name"] for c in manage.list_chats(config, "friend", "ali")] == ["Alice"]
+    team = [c for c in manage.list_chats(config, "friend") if c["name"] == "Team"][0]
+    assert team["same_name_count"] == 2
+
+
+def test_allow_friend_isolates_other_chats(with_friends):
+    result = manage.allow_room(with_friends, "Alice")
+    assert result["kind"] == "friend"
+    service = Service(Config(with_friends))
+    try:
+        texts = [m["text"] for m in service.messages("Alice")["messages"]]
+        assert texts == ["hello from alice"]  # not the group message Alice also sent
+        with pytest.raises(ValueError, match="allowed_rooms"):
+            service.messages("Bob")
+    finally:
+        service.close()
+
+
+def test_same_name_group_and_friend_fail_closed(with_friends):
+    with pytest.raises(ValueError, match="--chat-id"):
+        manage.allow_room(with_friends, "Team")
+    with pytest.raises(ValueError, match="--chat-id"):
+        manage.allow_room(with_friends, "Bob")
+    # An old allow-list entry that later becomes ambiguous must stop resolving, not guess.
+    raw = json.loads(with_friends.read_text(encoding="utf-8"))
+    raw["allowed_rooms"] = ["Team"]
+    with_friends.write_text(json.dumps(raw), encoding="utf-8")
+    service = Service(Config(with_friends))
+    try:
+        assert service.messages("Team")["messages"] == []
+    finally:
+        service.close()
+    manage.allow_room(with_friends, "Team", "c1")
+    service = Service(Config(with_friends))
+    try:
+        assert [m["text"] for m in service.messages("Team")["messages"]] == ["group text"]
+    finally:
+        service.close()

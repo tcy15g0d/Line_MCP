@@ -161,23 +161,67 @@ class LineDatabase:
         groups = {row[1] for row in db.execute('PRAGMA table_info("_groupchat")')}
         if not {"_chatMid", "_chatName"}.issubset(groups):
             raise ValueError("Unsupported group columns")
+        self.contact_columns = ({row[1] for row in db.execute('PRAGMA table_info("_contact")')}
+                                if "_contact" in tables else set())
+        self.profile_columns = ({row[1] for row in db.execute('PRAGMA table_info("_profile")')}
+                                if "_profile" in tables else set())
+        self.has_chat_table = "_chat" in tables
         result = {}
+        friends = None
         for room in self.config.allowed:
             configured = self.config.room(room).get("chat_id")
             if configured:
                 rows = list(db.execute('SELECT _chatMid FROM _groupchat WHERE _chatName = ? AND _chatMid = ? LIMIT 3', (room, configured)))
             else:
                 rows = list(db.execute('SELECT _chatMid FROM _groupchat WHERE _chatName = ? LIMIT 3', (room,)))
-            if len(rows) == 1:
-                result[room] = rows[0][0]
-        self.contact_columns = ({row[1] for row in db.execute('PRAGMA table_info("_contact")')}
-                                if "_contact" in tables else set())
-        self.profile_columns = ({row[1] for row in db.execute('PRAGMA table_info("_profile")')}
-                                if "_profile" in tables else set())
+            ids = [row[0] for row in rows]
+            if friends is None:
+                friends = self._friend_chats(db)
+            # Group and friend names share one namespace: any overlap is ambiguous and fails closed.
+            ids += [f["chat_id"] for f in friends if f["name"] == room and (not configured or f["chat_id"] == configured)]
+            if len(ids) == 1:
+                result[room] = ids[0]
         return result
 
+    def _friend_chats(self, db: apsw.Connection) -> list[dict]:
+        """One-to-one chats, named by the friend's name as shown in LINE. Names only, no messages."""
+        if not self.has_chat_table or not {"_mid"}.issubset(self.contact_columns):
+            return []
+        chat_columns = {row[1] for row in db.execute('PRAGMA table_info("_chat")')}
+        if "_id" not in chat_columns:
+            return []
+        wanted = [c for c in ("_displayName", "_displayNameOverridden", "_targetProfileDetail") if c in self.contact_columns]
+        activity = 'ch."_lastUpdatedTime"' if "_lastUpdatedTime" in chat_columns else "NULL"
+        sql = ('SELECT c."_mid", ' + activity + "".join(', c."%s"' % c for c in wanted) +
+               ' FROM _contact c JOIN _chat ch ON ch."_id" = c."_mid" WHERE substr(c."_mid", 1, 1) = \'u\'')
+        friends = []
+        for mid, last, *values in db.execute(sql):
+            fields = dict(zip(wanted, values))
+            name = fields.get("_displayNameOverridden") or fields.get("_displayName") or ""
+            if not name and fields.get("_targetProfileDetail"):
+                try:
+                    name = json.loads(fields["_targetProfileDetail"]).get("profileName") or ""
+                except (ValueError, AttributeError):
+                    pass
+            if name:
+                friends.append({"name": name, "chat_id": mid, "last_activity_ms": last, "kind": "friend"})
+        return friends
+
+    def list_chats(self) -> list[dict]:
+        """Group and friend chat names only (no messages), newest activity first. For CLI selection."""
+        if self.db is None:
+            return []
+        chats = self.list_groups() + self._friend_chats(self.db)
+        chats.sort(key=lambda c: c["last_activity_ms"] or 0, reverse=True)
+        counts: dict[str, int] = {}
+        for chat in chats:
+            counts[chat["name"]] = counts.get(chat["name"], 0) + 1
+        for chat in chats:
+            chat["same_name_count"] = counts[chat["name"]]
+        return chats
+
     def list_groups(self) -> list[dict]:
-        """Group names only (no messages), newest activity first. For CLI room selection."""
+        """Group names only (no messages), newest activity first."""
         if self.db is None:
             return []
         chat_columns = {row[1] for row in self.db.execute('PRAGMA table_info("_chat")')}
@@ -187,14 +231,8 @@ class LineDatabase:
         if has_activity:
             sql += ' LEFT JOIN _chat c ON c."_id" = g."_chatMid"'
         sql += ' WHERE COALESCE(g."_chatName", \'\') != \'\' ORDER BY 3 DESC'
-        groups = [{"name": name, "chat_id": mid, "last_activity_ms": last}
-                  for mid, name, last in self.db.execute(sql)]
-        counts: dict[str, int] = {}
-        for g in groups:
-            counts[g["name"]] = counts.get(g["name"], 0) + 1
-        for g in groups:
-            g["same_name_count"] = counts[g["name"]]
-        return groups
+        return [{"name": name, "chat_id": mid, "last_activity_ms": last, "kind": "group"}
+                for mid, name, last in self.db.execute(sql)]
 
     def messages(self, room: str, query: str = "", since_ms: int | None = None,
                  until_ms: int | None = None, limit: int = 100, offset: int = 0,
