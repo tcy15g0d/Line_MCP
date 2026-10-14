@@ -1,0 +1,35 @@
+[build-system]
+requires = ["setuptools>=77"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "line-local-mcp"
+version = "0.1.0"
+description = "Read-only, room-scoped MCP for personal LINE desktop data"
+license = "MIT"
+license-files = ["LICENSE"]
+requires-python = ">=3.11"
+dependencies = [
+  "mcp==2.3.0",
+  "apsw-sqlite3mc==3.54.0.0",
+  "psutil>=7,<9",
+  "pypdf>=6,<7",
+  "python-docx>=1.2,<2",
+  "openpyxl>=3.1,<4",
+  "cryptography>=46,<51",
+  "tzdata>=2025.2",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=8,<10"]
+
+[project.scripts]
+line-local-mcp = "line_mcp.server:main"
+line-local = "line_mcp.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+pythonpath = ["src"]
+testpaths = ["tests"]

@@ -1,0 +1,12 @@
+{
+  "line_root": "%LOCALAPPDATA%/LINE",
+  "allowed_rooms": [],
+  "auto_memory_key": true,
+  "database": null,
+  "snapshot_dir": "data/snapshots",
+  "linked_file_roots": ["%USERPROFILE%/Downloads", "%USERPROFILE%/Documents", "%USERPROFILE%/Desktop"],
+  "rooms": {},
+  "max_file_bytes": 20971520,
+  "max_scan_files": 100000,
+  "max_output_chars": 50000
+}

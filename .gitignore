@@ -1,0 +1,12 @@
+.venv/
+__pycache__/
+.pytest_cache/
+*.egg-info/
+config.local.json
+data/
+reports/
+*.edb
+*.edb-wal
+*.edb-shm
+*.eimg
+*.key
