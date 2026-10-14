@@ -9,7 +9,7 @@
 需求：Windows、Python 3.11 以上、已登入的 LINE 桌面版。
 
 ```powershell
-git clone <此專案網址> Line_MCP
+git clone https://github.com/tcy15g0d/Line_MCP.git
 Set-Location Line_MCP
 py -3.11 -m venv .venv
 .\.venv\Scripts\python.exe -m pip install -e .
