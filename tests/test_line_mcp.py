@@ -439,3 +439,83 @@ def test_same_name_group_and_friend_fail_closed(with_friends):
         assert [m["text"] for m in service.messages("Team")["messages"]] == ["group text"]
     finally:
         service.close()
+
+
+def scripted(*answers):
+    """An `ask` that replays answers and records what the user would have seen."""
+    queue = list(answers)
+    return lambda prompt="": queue.pop(0)
+
+
+def test_interactive_pick_confirms_and_pins_chat_id(with_friends):
+    shown = []
+    result = manage.allow_interactive(with_friends, ask=scripted("ali", "1", "y"), say=shown.append)
+    assert result["allowed_rooms"] == ["Alice"] and result["kinds"] == ["friend"]
+    assert Config(with_friends).room("Alice")["chat_id"] == "ualice"  # pinned by ID
+    assert any("提醒" in line and "私密" in line for line in shown)  # friend notice
+    service = Service(Config(with_friends))
+    try:
+        assert [m["text"] for m in service.messages("Alice")["messages"]] == ["hello from alice"]
+    finally:
+        service.close()
+
+
+def test_interactive_pick_cancel_leaves_allow_list_unchanged(with_friends):
+    for answers in (("", ""), ("ali", ""), ("ali", "1", "n"), ("ali", "1", "")):
+        assert manage.allow_interactive(with_friends, ask=scripted(*answers), say=lambda _: None) is None
+    assert Config(with_friends, require_rooms=False).allowed == []
+    with pytest.raises(ValueError, match="編號"):
+        manage.allow_interactive(with_friends, ask=scripted("ali", "9"), say=lambda _: None)
+    with pytest.raises(ValueError, match="編號"):
+        manage.allow_interactive(with_friends, ask=scripted("ali", "abc"), say=lambda _: None)
+
+
+def test_interactive_default_lists_groups_only(with_friends):
+    shown = []
+    manage.allow_interactive(with_friends, ask=scripted("", ""), say=shown.append)
+    listing = "\n".join(shown)
+    assert "Team" in listing and "Alice" not in listing  # friends need an explicit search
+
+
+def test_same_name_chats_cannot_both_be_allowed(with_friends):
+    manage.allow_room(with_friends, "Team", "c1")
+    with pytest.raises(ValueError, match="同名"):
+        manage.allow_room(with_friends, "Team", "uteam")
+    assert Config(with_friends).room("Team")["chat_id"] == "c1"
+
+
+@pytest.fixture
+def with_community(with_friends, tmp_path):
+    db = sqlite3.connect(tmp_path / "friends.edb")
+    db.executescript('''
+        CREATE TABLE _square (_mid TEXT, _name TEXT);
+        CREATE TABLE _squareChat (_squareChatMid TEXT, _squareMid TEXT, _name TEXT);
+        CREATE TABLE _squareMember (_squareMemberMid TEXT, _displayName TEXT);
+    ''')
+    db.executemany("INSERT INTO _square VALUES (?,?)", [("s1", "Open Club"), ("s2", "Solo")])
+    db.executemany("INSERT INTO _squareChat VALUES (?,?,?)", [
+        ("mgen", "s1", "General"), ("mdev", "s1", "Dev"), ("msolo", "s2", "Solo"), ("mnone", "s1", "No Messages")])
+    db.executemany("INSERT INTO _squareMember VALUES (?,?)", [("pmember", "Stranger One")])
+    db.executemany("INSERT INTO _chat VALUES (?,?)", [("mgen", 3), ("mdev", 2), ("msolo", 1)])
+    db.executemany("INSERT INTO _message VALUES (?,?,?,?,?,?,?,?)", [
+        ("10", "mgen", "pmember", 1, "welcome all", 0, "{}", "{}"),
+        ("11", "mdev", "pother", 2, "dev only", 0, "{}", "{}")])
+    db.commit()
+    db.close()
+    return with_friends
+
+
+def test_community_names_listing_and_isolation(with_community):
+    config = Config(with_community, require_rooms=False)
+    names = {c["name"] for c in manage.list_chats(config, "community")}
+    assert names == {"Open Club / General", "Open Club / Dev", "Solo"}  # chat name omitted when it equals the community
+    assert manage.allow_room(with_community, "Open Club / General")["kind"] == "community"
+    service = Service(Config(with_community))
+    try:
+        messages = service.messages("Open Club / General")["messages"]
+        assert [m["text"] for m in messages] == ["welcome all"]
+        assert messages[0]["sender"] == "Stranger One"  # resolved through _squareMember
+        with pytest.raises(ValueError, match="allowed_rooms"):
+            service.messages("Open Club / Dev")
+    finally:
+        service.close()

@@ -166,8 +166,11 @@ class LineDatabase:
         self.profile_columns = ({row[1] for row in db.execute('PRAGMA table_info("_profile")')}
                                 if "_profile" in tables else set())
         self.has_chat_table = "_chat" in tables
+        self.tables = tables
+        self.square_member_columns = ({row[1] for row in db.execute('PRAGMA table_info("_squareMember")')}
+                                      if "_squaremember" in tables else set())
         result = {}
-        friends = None
+        others = None
         for room in self.config.allowed:
             configured = self.config.room(room).get("chat_id")
             if configured:
@@ -175,10 +178,10 @@ class LineDatabase:
             else:
                 rows = list(db.execute('SELECT _chatMid FROM _groupchat WHERE _chatName = ? LIMIT 3', (room,)))
             ids = [row[0] for row in rows]
-            if friends is None:
-                friends = self._friend_chats(db)
-            # Group and friend names share one namespace: any overlap is ambiguous and fails closed.
-            ids += [f["chat_id"] for f in friends if f["name"] == room and (not configured or f["chat_id"] == configured)]
+            if others is None:
+                others = self._friend_chats(db) + self._community_chats(db)
+            # Group, friend and community names share one namespace: any overlap is ambiguous and fails closed.
+            ids += [f["chat_id"] for f in others if f["name"] == room and (not configured or f["chat_id"] == configured)]
             if len(ids) == 1:
                 result[room] = ids[0]
         return result
@@ -207,11 +210,32 @@ class LineDatabase:
                 friends.append({"name": name, "chat_id": mid, "last_activity_ms": last, "kind": "friend"})
         return friends
 
+    def _community_chats(self, db: apsw.Connection) -> list[dict]:
+        """Community (Square) chats that have local messages, named "community / chat". Names only."""
+        if not {"_squarechat", "_square", "_chat"}.issubset(self.tables):
+            return []
+        sc = {row[1] for row in db.execute('PRAGMA table_info("_squareChat")')}
+        sq = {row[1] for row in db.execute('PRAGMA table_info("_square")')}
+        chat = {row[1] for row in db.execute('PRAGMA table_info("_chat")')}
+        if not ({"_squareChatMid", "_squareMid", "_name"} <= sc and {"_mid", "_name"} <= sq and "_id" in chat):
+            return []
+        activity = 'ch."_lastUpdatedTime"' if "_lastUpdatedTime" in chat else "NULL"
+        sql = ('SELECT c."_squareChatMid", c."_name", s."_name", ' + activity + ' FROM _squareChat c '
+               'JOIN _chat ch ON ch."_id" = c."_squareChatMid" LEFT JOIN _square s ON s."_mid" = c."_squareMid"')
+        chats = []
+        for mid, chat_name, square_name, last in db.execute(sql):
+            chat_name, square_name = chat_name or "", square_name or ""
+            name = (chat_name if not square_name else square_name if not chat_name or chat_name == square_name
+                    else f"{square_name} / {chat_name}")
+            if name:
+                chats.append({"name": name, "chat_id": mid, "last_activity_ms": last, "kind": "community"})
+        return chats
+
     def list_chats(self) -> list[dict]:
-        """Group and friend chat names only (no messages), newest activity first. For CLI selection."""
+        """Group, friend and community chat names only (no messages), newest activity first. For CLI selection."""
         if self.db is None:
             return []
-        chats = self.list_groups() + self._friend_chats(self.db)
+        chats = self.list_groups() + self._friend_chats(self.db) + self._community_chats(self.db)
         chats.sort(key=lambda c: c["last_activity_ms"] or 0, reverse=True)
         counts: dict[str, int] = {}
         for chat in chats:
@@ -288,6 +312,12 @@ class LineDatabase:
                     if name:
                         names[mid] = name
                         continue
+            if {"_squareMemberMid", "_displayName"}.issubset(self.square_member_columns):
+                row = next(iter(self.db.execute(
+                    'SELECT "_displayName" FROM _squareMember WHERE "_squareMemberMid" = ?', (mid,))), None)
+                if row and row[0]:
+                    names[mid] = row[0]
+                    continue
             if {"_mid", "_displayName"}.issubset(self.profile_columns):
                 row = next(iter(self.db.execute(
                     'SELECT "_displayName" FROM _profile WHERE "_mid" = ?', (mid,))), None)
